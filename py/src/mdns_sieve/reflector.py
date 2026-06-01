@@ -27,11 +27,13 @@ from mdns_sieve.mdns_parser import parse_mdns_packet, MdnsParsingError
 logger = logging.getLogger("mdns_sieve.reflector")
 
 
+# pylint: disable=too-many-instance-attributes
 class MdnsReflector:
     """Core daemon service running the mDNS reflection and filtering event loop."""
 
-    def __init__(self, config: AppConfig) -> None:
+    def __init__(self, config: AppConfig, verbosity: int = 0) -> None:
         self.config = config
+        self.verbosity = verbosity
         self.sockets: Dict[str, socket.socket] = {}
         self.interface_ips: Dict[str, str] = {}
         self.offline_interfaces: Set[str] = set(config.interfaces)
@@ -164,13 +166,14 @@ class MdnsReflector:
                 continue
 
             if self.config.should_forward(src_interface, dst_interface, names):
-                logger.debug(
-                    "Forwarding mDNS packet (%d bytes) from %s -> %s for names: %s",
-                    len(data),
-                    src_interface,
-                    dst_interface,
-                    names,
-                )
+                if self.verbosity >= 2:
+                    logger.debug(
+                        "Forwarding mDNS packet (%d bytes) from %s -> %s for names: %s",
+                        len(data),
+                        src_interface,
+                        dst_interface,
+                        names,
+                    )
                 try:
                     sock.sendto(data, ("224.0.0.251", 5353))
                 except OSError as e:
@@ -178,6 +181,14 @@ class MdnsReflector:
                     logger.error("Transmit failed on %s: %s", dst_interface, str(e))
                     if e.errno in (errno.EBADF, errno.ENETDOWN, errno.ENETUNREACH):
                         self.mark_interface_offline(dst_interface)
+            else:
+                if self.verbosity >= 1:
+                    logger.debug(
+                        "Denied mDNS packet from %s -> %s for names: %s",
+                        src_interface,
+                        dst_interface,
+                        names,
+                    )
 
     # pylint: disable=too-many-branches
     def run(self) -> None:

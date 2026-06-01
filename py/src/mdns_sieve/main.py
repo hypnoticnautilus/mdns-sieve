@@ -43,12 +43,13 @@ def main() -> None:
     parser.add_argument(
         "-v",
         "--verbose",
-        action="store_true",
-        help="Enable highly verbose debug logging.",
+        action="count",
+        default=0,
+        help="Increase verbosity level (e.g. -v or -vv to capture blocked/repeated packets).",
     )
     args = parser.parse_args()
 
-    setup_logging(args.verbose)
+    setup_logging(args.verbose >= 1)
     logger = logging.getLogger("mdns_sieve")
 
     logger.info("Initializing mdns-sieve...")
@@ -64,7 +65,7 @@ def main() -> None:
             logging.exception(e)
         sys.exit(1)
 
-    reflector = MdnsReflector(config)
+    reflector = MdnsReflector(config, verbosity=args.verbose)
 
     def signal_handler(signum: int, frame: Optional[FrameType]) -> None:
         # pylint: disable=unused-argument
