@@ -6,6 +6,7 @@ and operating system signal traps for clean terminations.
 """
 
 import argparse
+
 # pylint: disable=broad-exception-caught
 import logging
 import signal

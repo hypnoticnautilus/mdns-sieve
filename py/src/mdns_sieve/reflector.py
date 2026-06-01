@@ -6,6 +6,7 @@ runs the select-based event loop, and handles dynamic interface failures and rec
 """
 
 import errno
+
 # pylint: disable=broad-exception-caught
 import logging
 import select
