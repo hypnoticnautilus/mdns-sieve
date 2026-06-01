@@ -63,9 +63,7 @@ class DNSPacket:
 
 
 # pylint: disable=too-many-branches
-def parse_name(
-    data: bytes, offset: int, visited: Optional[Set[int]] = None
-) -> Tuple[str, int]:
+def parse_name(data: bytes, offset: int, visited: Optional[Set[int]] = None) -> Tuple[str, int]:
     """
     Parses a DNS domain name from the binary data starting at offset.
     Traverses compression pointers safely and guards against pointer loop exploits.
@@ -94,9 +92,7 @@ def parse_name(
             ptr_offset = ((len_byte & 0x3F) << 8) | data[offset + 1]
 
             if ptr_offset in visited:
-                raise MdnsParsingError(
-                    "Infinite recursion loop in compression pointers"
-                )
+                raise MdnsParsingError("Infinite recursion loop in compression pointers")
             if len(visited) > 20:
                 raise MdnsParsingError(
                     "Exceeded maximum compression pointer redirection depth (20)"
@@ -155,9 +151,7 @@ def parse_mdns_packet(data: bytes) -> DNSPacket:
 
     try:
         # Header layout: ID (2B), Flags (2B), QDCOUNT (2B), ANCOUNT (2B), NSCOUNT (2B), ARCOUNT (2B)
-        tx_id, flags, qdcount, ancount, nscount, arcount = struct.unpack(
-            "!HHHHHH", data[:12]
-        )
+        tx_id, flags, qdcount, ancount, nscount, arcount = struct.unpack("!HHHHHH", data[:12])
 
         offset = 12
         questions: List[DNSQuestion] = []
@@ -169,19 +163,13 @@ def parse_mdns_packet(data: bytes) -> DNSPacket:
         def parse_rr(curr_offset: int) -> Tuple[DNSResourceRecord, int]:
             name, curr_offset = parse_name(data, curr_offset)
             if curr_offset + 10 > len(data):
-                raise MdnsParsingError(
-                    f"Resource Record metadata truncated for name: {name}"
-                )
+                raise MdnsParsingError(f"Resource Record metadata truncated for name: {name}")
 
-            rtype, rclass, ttl, rdlen = struct.unpack(
-                "!HHIH", data[curr_offset : curr_offset + 10]
-            )
+            rtype, rclass, ttl, rdlen = struct.unpack("!HHIH", data[curr_offset : curr_offset + 10])
             curr_offset += 10
 
             if curr_offset + rdlen > len(data):
-                raise MdnsParsingError(
-                    f"Resource Record data truncated for name: {name}"
-                )
+                raise MdnsParsingError(f"Resource Record data truncated for name: {name}")
 
             rdata = data[curr_offset : curr_offset + rdlen]
             curr_offset += rdlen

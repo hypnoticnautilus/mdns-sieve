@@ -30,3 +30,6 @@ mdns-sieve = "mdns_sieve.main:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/mdns_sieve"]
+
+[tool.ruff]
+line-length = 100

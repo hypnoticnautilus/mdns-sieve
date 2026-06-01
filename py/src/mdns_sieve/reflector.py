@@ -22,7 +22,7 @@ except ImportError:
     fcntl = None  # type: ignore
 
 from mdns_sieve.config import AppConfig
-from mdns_sieve.mdns_parser import parse_mdns_packet, mDNSParsingError
+from mdns_sieve.mdns_parser import parse_mdns_packet, MdnsParsingError
 
 logger = logging.getLogger("mdns_sieve.reflector")
 
@@ -57,9 +57,7 @@ class MdnsReflector:
             # IPv4 address is in bytes 20-24 of the returned ifreq structure
             return socket.inet_ntoa(info[20:24])
         except Exception as e:
-            raise OSError(
-                f"Failed to resolve IP for interface {ifname}: {str(e)}"
-            ) from e
+            raise OSError(f"Failed to resolve IP for interface {ifname}: {str(e)}") from e
         finally:
             s.close()
 
@@ -85,9 +83,7 @@ class MdnsReflector:
 
             # Bind strictly to the physical device to prevent interface crosstalk (Linux specific)
             try:
-                sock.setsockopt(
-                    socket.SOL_SOCKET, socket.SO_BINDTODEVICE, ifname.encode("utf-8")
-                )
+                sock.setsockopt(socket.SOL_SOCKET, socket.SO_BINDTODEVICE, ifname.encode("utf-8"))
             except Exception as e:
                 logger.warning(
                     "SO_BINDTODEVICE failed for %s: %s. Relying on membership isolation.",
@@ -133,9 +129,7 @@ class MdnsReflector:
                 sock = self.setup_socket(ifname)
                 self.sockets[ifname] = sock
             except Exception as e:
-                logger.warning(
-                    "Interface %s is unavailable: %s. Will retry.", ifname, str(e)
-                )
+                logger.warning("Interface %s is unavailable: %s. Will retry.", ifname, str(e))
                 still_offline.add(ifname)
 
         self.offline_interfaces = still_offline
@@ -157,10 +151,8 @@ class MdnsReflector:
         """Parses a packet, evaluates filtering rules, and replicates to allowed interfaces."""
         try:
             packet = parse_mdns_packet(data)
-        except mDNSParsingError as e:
-            logger.debug(
-                "Parsing failed for packet received on %s: %s", src_interface, str(e)
-            )
+        except MdnsParsingError as e:
+            logger.debug("Parsing failed for packet received on %s: %s", src_interface, str(e))
             return
 
         names = packet.extract_names()

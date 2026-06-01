@@ -69,9 +69,7 @@ def main() -> None:
     def signal_handler(signum: int, frame: Optional[FrameType]) -> None:
         # pylint: disable=unused-argument
         """Gracefully captures SIGINT and SIGTERM to stop the reflector."""
-        logger.info(
-            "Received termination signal %d. Shutting down gracefully...", signum
-        )
+        logger.info("Received termination signal %d. Shutting down gracefully...", signum)
         reflector.stop()
         sys.exit(0)
 

@@ -14,7 +14,7 @@ from unittest.mock import MagicMock, patch
 from mdns_sieve.config import load_config, ConfigurationError, AppConfig, FilterRule
 from mdns_sieve.mdns_parser import (
     parse_mdns_packet,
-    mDNSParsingError,
+    MdnsParsingError,
     DNSPacket,
     DNSQuestion,
     DNSResourceRecord,
@@ -99,30 +99,21 @@ rules:
                 dst="wlan0",
             ),
             # Allow general Google Cast everywhere
-            FilterRule(
-                action="allow", services=["_googlecast._tcp.local"], src="*", dst="*"
-            ),
+            FilterRule(action="allow", services=["_googlecast._tcp.local"], src="*", dst="*"),
             # Allow specific local apple tv host
             FilterRule(action="allow", hosts=["*.local"], src="eth0", dst="eth1"),
         ]
-        config = AppConfig(
-            interfaces=["eth0", "eth1", "wlan0"], default_action="deny", rules=rules
-        )
+        config = AppConfig(interfaces=["eth0", "eth1", "wlan0"], default_action="deny", rules=rules)
 
         # 1. Deny rule matches Spotify from eth1 -> wlan0
-        self.assertFalse(
-            config.should_forward("eth1", "wlan0", {"_spotify-connect._tcp.local"})
-        )
+        self.assertFalse(config.should_forward("eth1", "wlan0", {"_spotify-connect._tcp.local"}))
 
-        # 2. Spotify from eth1 -> eth0 is not blocked by that specific rule, falls back to default deny
-        self.assertFalse(
-            config.should_forward("eth1", "eth0", {"_spotify-connect._tcp.local"})
-        )
+        # 2. Spotify from eth1 -> eth0 is not blocked by that specific rule, falls back to default
+        #    deny
+        self.assertFalse(config.should_forward("eth1", "eth0", {"_spotify-connect._tcp.local"}))
 
         # 3. Google Cast from eth1 -> wlan0 is allowed
-        self.assertTrue(
-            config.should_forward("eth1", "wlan0", {"_googlecast._tcp.local"})
-        )
+        self.assertTrue(config.should_forward("eth1", "wlan0", {"_googlecast._tcp.local"}))
 
         # 4. Host match wildcard *.local from eth0 -> eth1 is allowed
         self.assertTrue(config.should_forward("eth0", "eth1", {"my-device.local"}))
@@ -136,7 +127,7 @@ class TestMdnsParser(unittest.TestCase):
 
     def test_empty_or_short_payload(self) -> None:
         """Verifies that truncated payloads are rejected."""
-        with self.assertRaises(mDNSParsingError):
+        with self.assertRaises(MdnsParsingError):
             parse_mdns_packet(b"too_short")
 
     def test_parse_simple_question(self) -> None:
@@ -163,7 +154,7 @@ class TestMdnsParser(unittest.TestCase):
         bad_name = b"\xc0\x0c"
         qdetails = struct.pack("!HH", 12, 1)
 
-        with self.assertRaises(mDNSParsingError) as ctx:
+        with self.assertRaises(MdnsParsingError) as ctx:
             parse_mdns_packet(header + bad_name + qdetails)
         self.assertIn("recursion loop", str(ctx.exception))
 
@@ -181,7 +172,7 @@ class TestMdnsParser(unittest.TestCase):
         data.extend(b"\x00")
         data.extend(struct.pack("!HH", 12, 1))
 
-        with self.assertRaises(mDNSParsingError) as ctx:
+        with self.assertRaises(MdnsParsingError) as ctx:
             parse_mdns_packet(bytes(data))
         self.assertIn("redirection depth", str(ctx.exception))
 
@@ -213,9 +204,7 @@ class TestReflectorEngine(unittest.TestCase):
 
     @patch("socket.socket")
     @patch("mdns_sieve.reflector.MdnsReflector.get_interface_ip")
-    def test_setup_socket_options(
-        self, mock_get_ip: MagicMock, mock_socket: MagicMock
-    ) -> None:
+    def test_setup_socket_options(self, mock_get_ip: MagicMock, mock_socket: MagicMock) -> None:
         """Verifies socket initialization binds correctly and configures multicast."""
         mock_get_ip.return_value = "192.168.1.1"
         mock_sock = MagicMock()
@@ -232,7 +221,7 @@ class TestReflectorEngine(unittest.TestCase):
         mock_sock.setsockopt.assert_any_call(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
 
     @patch("select.select")
-    def test_forwarding_loop_exclusion(self, mock_select: MagicMock) -> None:
+    def test_forwarding_loop_exclusion(self, mock_select: MagicMock) -> None:  # pylint: disable=unused-argument
         """Verifies packets are forwarded based on rules, and never reflected back to source."""
         config = AppConfig(interfaces=["eth0", "eth1"], default_action="allow")
         reflector = MdnsReflector(config)
@@ -255,9 +244,7 @@ class TestReflectorEngine(unittest.TestCase):
         # Should NOT send packet back out on eth0
         mock_sock_eth0.sendto.assert_not_called()
         # Should forward packet out on eth1
-        mock_sock_eth1.sendto.assert_called_once_with(
-            packet_data, ("224.0.0.251", 5353)
-        )
+        mock_sock_eth1.sendto.assert_called_once_with(packet_data, ("224.0.0.251", 5353))
 
 
 if __name__ == "__main__":

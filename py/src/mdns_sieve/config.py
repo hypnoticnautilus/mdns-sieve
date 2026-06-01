@@ -103,9 +103,7 @@ def load_config(config_path: str) -> AppConfig:
     interfaces = raw_data.get("interfaces")
     if not interfaces:
         raise ConfigurationError("Missing or empty 'interfaces' list in configuration")
-    if not isinstance(interfaces, list) or not all(
-        isinstance(i, str) for i in interfaces
-    ):
+    if not isinstance(interfaces, list) or not all(isinstance(i, str) for i in interfaces):
         raise ConfigurationError("'interfaces' must be a list of strings")
 
     # Validate default action
@@ -143,17 +141,13 @@ def load_config(config_path: str) -> AppConfig:
             )
 
         services = r.get("services", [])
-        if not isinstance(services, list) or not all(
-            isinstance(s, str) for s in services
-        ):
+        if not isinstance(services, list) or not all(isinstance(s, str) for s in services):
             raise ConfigurationError(f"Rule {idx} 'services' must be a list of strings")
 
         hosts = r.get("hosts", [])
         if not isinstance(hosts, list) or not all(isinstance(h, str) for h in hosts):
             raise ConfigurationError(f"Rule {idx} 'hosts' must be a list of strings")
 
-        rules.append(
-            FilterRule(action=action, services=services, hosts=hosts, src=src, dst=dst)
-        )
+        rules.append(FilterRule(action=action, services=services, hosts=hosts, src=src, dst=dst))
 
     return AppConfig(interfaces=interfaces, default_action=default_action, rules=rules)
