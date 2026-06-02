@@ -35,6 +35,7 @@ class DNSResourceRecord:
     target_name: Optional[str] = None  # Populated for PTR or SRV targets
 
 
+# pylint: disable=too-many-instance-attributes
 @dataclass
 class DNSPacket:
     """Represents a decoded DNS/mDNS packet."""
@@ -46,6 +47,8 @@ class DNSPacket:
     authorities: List[DNSResourceRecord] = field(default_factory=list)
     additionals: List[DNSResourceRecord] = field(default_factory=list)
     _extracted_names: Optional[Set[str]] = field(default=None, init=False, repr=False)
+    _extracted_question_names: Optional[Set[str]] = field(default=None, init=False, repr=False)
+    _extracted_answer_names: Optional[Set[str]] = field(default=None, init=False, repr=False)
 
     def extract_names(self) -> Set[str]:
         """
@@ -54,15 +57,28 @@ class DNSPacket:
         found inside PTR or SRV resource data. Caches results on first evaluation.
         """
         if self._extracted_names is None:
+            self._extracted_names = self.extract_question_names() | self.extract_answer_names()
+        return self._extracted_names
+
+    def extract_question_names(self) -> Set[str]:
+        """Extracts and returns all names present in the Questions section."""
+        if self._extracted_question_names is None:
             names: Set[str] = set()
             for q in self.questions:
                 names.add(q.name)
+            self._extracted_question_names = names
+        return self._extracted_question_names
+
+    def extract_answer_names(self) -> Set[str]:
+        """Extracts and returns all names present in Answers, Authority, and Additionals."""
+        if self._extracted_answer_names is None:
+            names: Set[str] = set()
             for rr in self.answers + self.authorities + self.additionals:
                 names.add(rr.name)
                 if rr.target_name:
                     names.add(rr.target_name)
-            self._extracted_names = names
-        return self._extracted_names
+            self._extracted_answer_names = names
+        return self._extracted_answer_names
 
 
 def _resolve_pointer(data: bytes, offset: int, len_byte: int, visited: Set[int]) -> str:

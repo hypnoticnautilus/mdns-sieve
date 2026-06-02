@@ -6,9 +6,18 @@ matches incoming packet metadata against defined interface routing and wildcard 
 """
 
 from dataclasses import dataclass, field
+from enum import Enum
 import fnmatch
-from typing import Any, Dict, List, Set
+from typing import Any, Dict, List, Optional, Set
 import yaml
+
+
+class RuleSection(str, Enum):
+    """Enumeration of packet sections that filtering rules can target."""
+
+    QUESTIONS = "questions"
+    ANSWERS = "answers"
+    ANY = "any"
 
 
 class ConfigurationError(ValueError):
@@ -26,6 +35,7 @@ class FilterRule:
     hosts: List[str] = field(default_factory=list)  # List of hostname wildcard patterns to match
     src: str = "*"  # Source physical interface name or "*" to match any source interface
     dst: str = "*"  # Destination physical interface name or "*" to match any destination interface
+    section: RuleSection = RuleSection.ANY  # Targets questions, answers, or any packet section
 
     def __post_init__(self) -> None:
         """Cleans and canonicalizes match patterns ahead of time for high performance."""
@@ -38,15 +48,22 @@ class FilterRule:
         dst_match = self.dst in ("*", dst_interface)
         return src_match and dst_match
 
-    def matches_packet(self, packet_names: Set[str]) -> bool:
+    def matches_packet(self, question_names: Set[str], answer_names: Set[str]) -> bool:
         """
-        Checks if this rule matches any service types or hostnames in the packet.
-        If neither services nor hosts are specified in the rule, it acts as a catch-all.
+        Checks if this rule matches any service types or hostnames in the packet
+        based on the rule's target section.
         """
-        if not self.services and not self.hosts:
-            return True
+        if self.section == RuleSection.QUESTIONS:
+            target_names = question_names
+        elif self.section == RuleSection.ANSWERS:
+            target_names = answer_names
+        else:  # RuleSection.ANY
+            target_names = question_names | answer_names
 
-        for name in packet_names:
+        if not self.services and not self.hosts:
+            return bool(target_names)
+
+        for name in target_names:
             # Canonicalize name by stripping trailing dots and checking case-insensitively
             clean_name = name.rstrip(".").lower()
 
@@ -72,16 +89,28 @@ class AppConfig:
     rules: List[FilterRule] = field(default_factory=list)
 
     def should_forward(
-        self, src_interface: str, dst_interface: str, packet_names: Set[str]
+        self,
+        src_interface: str,
+        dst_interface: str,
+        question_names: Set[str],
+        answer_names: Optional[Set[str]] = None,
     ) -> bool:
         """
         Evaluates the rules list in order (first match wins) to determine
         if a packet should be forwarded from src_interface to dst_interface.
-        Falls back to default_action if no rules match.
+        Falls back to default_action if no rules match. Supports backward compatibility
+        if only a single set of names is passed.
         """
+        if answer_names is None:
+            q_names = question_names
+            a_names = question_names
+        else:
+            q_names = question_names
+            a_names = answer_names
+
         for rule in self.rules:
             if rule.applies_to(src_interface, dst_interface):
-                if rule.matches_packet(packet_names):
+                if rule.matches_packet(q_names, a_names):
                     return rule.action
 
         return self.default_action == "allow"
@@ -122,8 +151,24 @@ def _parse_rule(idx: int, r: Dict[str, Any], interfaces: List[str]) -> FilterRul
     if not isinstance(hosts, list) or not all(isinstance(h, str) for h in hosts):
         raise ConfigurationError(f"Rule {idx} 'hosts' must be a list of strings")
 
+    section_str = r.get("section", "any")
+    try:
+        section = RuleSection(section_str)
+    except ValueError as e:
+        raise ConfigurationError(
+            f"Rule {idx} invalid 'section' '{section_str}' "
+            "(must be 'questions', 'answers', or 'any')"
+        ) from e
+
     is_allow = action == "allow"
-    return FilterRule(action=is_allow, services=services, hosts=hosts, src=src, dst=dst)
+    return FilterRule(
+        action=is_allow,
+        services=services,
+        hosts=hosts,
+        src=src,
+        dst=dst,
+        section=section,
+    )
 
 
 def load_config(config_path: str) -> AppConfig:

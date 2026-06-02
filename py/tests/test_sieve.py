@@ -11,7 +11,7 @@ import struct
 import unittest
 from unittest.mock import MagicMock, patch
 
-from mdns_sieve.config import load_config, ConfigurationError, AppConfig, FilterRule
+from mdns_sieve.config import load_config, ConfigurationError, AppConfig, FilterRule, RuleSection
 from mdns_sieve.mdns_parser import (
     parse_mdns_packet,
     MdnsParsingError,
@@ -245,6 +245,174 @@ class TestReflectorEngine(unittest.TestCase):
         mock_sock_eth0.sendto.assert_not_called()
         # Should forward packet out on eth1
         mock_sock_eth1.sendto.assert_called_once_with(packet_data, ("224.0.0.251", 5353))
+
+
+class TestQAFiltering(unittest.TestCase):
+    """Verifies Question vs. Answer rule segmentation and unidirectional matching."""
+
+    def test_config_section_validation(self) -> None:
+        """Verifies parsing of the 'section' field in rules YAML."""
+        yaml_content = """
+interfaces: [eth0, eth1]
+default_action: deny
+rules:
+  - action: allow
+    section: questions
+    services: [_googlecast._tcp.local]
+  - action: deny
+    section: answers
+    hosts: [badhost.local]
+  - action: allow
+    section: invalid_section_name
+"""
+        with patch("builtins.open", return_value=io.StringIO(yaml_content)):
+            with self.assertRaises(ConfigurationError) as ctx:
+                load_config("mock.yaml")
+        self.assertIn("invalid 'section'", str(ctx.exception))
+
+    def test_rule_matching_by_section(self) -> None:
+        """Verifies FilterRule.matches_packet targets only specified packet components."""
+        # 1. Questions rule should match question names, ignore answers
+        q_rule = FilterRule(
+            action=True, services=["_googlecast._tcp.local"], section=RuleSection.QUESTIONS
+        )
+        self.assertTrue(
+            q_rule.matches_packet({"_googlecast._tcp.local"}, {"_spotify-connect._tcp.local"})
+        )
+        self.assertFalse(
+            q_rule.matches_packet({"_spotify-connect._tcp.local"}, {"_googlecast._tcp.local"})
+        )
+
+        # 2. Answers rule should match answer names, ignore questions
+        a_rule = FilterRule(
+            action=True, services=["_googlecast._tcp.local"], section=RuleSection.ANSWERS
+        )
+        self.assertFalse(
+            a_rule.matches_packet({"_googlecast._tcp.local"}, {"_spotify-connect._tcp.local"})
+        )
+        self.assertTrue(
+            a_rule.matches_packet({"_spotify-connect._tcp.local"}, {"_googlecast._tcp.local"})
+        )
+
+        # 3. 'Any' rule matches either
+        any_rule = FilterRule(
+            action=True, services=["_googlecast._tcp.local"], section=RuleSection.ANY
+        )
+        self.assertTrue(
+            any_rule.matches_packet({"_googlecast._tcp.local"}, {"_spotify-connect._tcp.local"})
+        )
+        self.assertTrue(
+            any_rule.matches_packet({"_spotify-connect._tcp.local"}, {"_googlecast._tcp.local"})
+        )
+
+    @patch("select.select")
+    def test_unidirectional_forwarding(self, _mock_select: MagicMock) -> None:
+        """Verifies end-to-end unidirectional discovery between Trusted and IoT VLANs."""
+        # Rules:
+        # - Allow Questions: eth0 (Trusted) -> eth1 (IoT)
+        # - Deny Questions: eth1 (IoT) -> eth0 (Trusted)
+        # - Allow Answers: eth1 (IoT) -> eth0 (Trusted)
+        # - Deny Answers: eth0 (Trusted) -> eth1 (IoT)
+        rules = [
+            FilterRule(
+                action=True, services=["*"], src="eth0", dst="eth1", section=RuleSection.QUESTIONS
+            ),
+            FilterRule(
+                action=False, services=["*"], src="eth1", dst="eth0", section=RuleSection.QUESTIONS
+            ),
+            FilterRule(
+                action=True, services=["*"], src="eth1", dst="eth0", section=RuleSection.ANSWERS
+            ),
+            FilterRule(
+                action=False, services=["*"], src="eth0", dst="eth1", section=RuleSection.ANSWERS
+            ),
+        ]
+        config = AppConfig(interfaces=["eth0", "eth1"], default_action="deny", rules=rules)
+        reflector = MdnsReflector(config)
+
+        mock_sock_eth0 = MagicMock()
+        mock_sock_eth1 = MagicMock()
+        reflector.sockets = {"eth0": mock_sock_eth0, "eth1": mock_sock_eth1}
+        reflector.interface_ips = {"eth0": "192.168.1.1", "eth1": "192.168.2.1"}
+
+        # Construct a mock query packet (1 Question, 0 Answers)
+        q_packet = (
+            struct.pack("!HHHHHH", 0, 0, 1, 0, 0, 0) + b"\x05local\x00" + struct.pack("!HH", 12, 1)
+        )
+
+        # Construct a mock answer packet (0 Questions, 1 Answer)
+        a_packet = (
+            struct.pack("!HHHHHH", 0, 0, 0, 1, 0, 0)
+            + b"\x05local\x00"
+            + struct.pack("!HHIH", 12, 1, 120, 0)
+        )
+
+        # A. Trusted asks IoT (Question eth0 -> eth1): ALLOWED
+        mock_sock_eth1.sendto.reset_mock()
+        reflector.handle_packet("eth0", q_packet)
+        mock_sock_eth1.sendto.assert_called_once_with(q_packet, ("224.0.0.251", 5353))
+
+        # B. IoT responds to Trusted (Answer eth1 -> eth0): ALLOWED
+        mock_sock_eth0.sendto.reset_mock()
+        reflector.handle_packet("eth1", a_packet)
+        mock_sock_eth0.sendto.assert_called_once_with(a_packet, ("224.0.0.251", 5353))
+
+        # C. IoT asks Trusted (Question eth1 -> eth0): BLOCKED
+        mock_sock_eth0.reset_mock()
+        reflector.handle_packet("eth1", q_packet)
+        mock_sock_eth0.sendto.assert_not_called()
+
+        # D. Trusted responds to IoT (Answer eth0 -> eth1): BLOCKED
+        mock_sock_eth1.reset_mock()
+        reflector.handle_packet("eth0", a_packet)
+        mock_sock_eth1.sendto.assert_not_called()
+
+    @patch("select.select")
+    @patch("mdns_sieve.reflector.logger")
+    def test_logging_indicates_section(
+        self, mock_logger: MagicMock, _mock_select: MagicMock
+    ) -> None:
+        """Verifies that allowed and denied packet logs include the section name categorization."""
+        rules = [
+            FilterRule(
+                action=True, services=["*"], src="eth0", dst="eth1", section=RuleSection.QUESTIONS
+            ),
+        ]
+        config = AppConfig(interfaces=["eth0", "eth1"], default_action="deny", rules=rules)
+        reflector = MdnsReflector(config, verbosity=2)
+
+        mock_sock_eth0 = MagicMock()
+        mock_sock_eth1 = MagicMock()
+        reflector.sockets = {"eth0": mock_sock_eth0, "eth1": mock_sock_eth1}
+        reflector.interface_ips = {"eth0": "192.168.1.1", "eth1": "192.168.2.1"}
+
+        # Construct a mock query packet (1 Question, 0 Answers)
+        q_packet = (
+            struct.pack("!HHHHHH", 0, 0, 1, 0, 0, 0) + b"\x05local\x00" + struct.pack("!HH", 12, 1)
+        )
+
+        # 1. Allowed packet logging (verbosity 2)
+        reflector.handle_packet("eth0", q_packet)
+        called_debug_messages = [
+            call[0][0] % call[0][1:] for call in mock_logger.debug.call_args_list
+        ]
+        any_forward_log = any(
+            "Forwarding" in msg and "questions: ['local'], answers: []" in msg
+            for msg in called_debug_messages
+        )
+        self.assertTrue(any_forward_log, f"Log was not found: {called_debug_messages}")
+
+        # 2. Denied packet logging (verbosity 1 or 2)
+        mock_logger.reset_mock()
+        reflector.handle_packet("eth1", q_packet)
+        called_debug_messages = [
+            call[0][0] % call[0][1:] for call in mock_logger.debug.call_args_list
+        ]
+        any_deny_log = any(
+            "Denied" in msg and "questions: ['local'], answers: []" in msg
+            for msg in called_debug_messages
+        )
+        self.assertTrue(any_deny_log, f"Log was not found: {called_debug_messages}")
 
 
 if __name__ == "__main__":

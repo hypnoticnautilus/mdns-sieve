@@ -156,22 +156,25 @@ class MdnsReflector:
             logger.debug("Parsing failed for packet received on %s: %s", src_interface, str(e))
             return
 
-        names = packet.extract_names()
-        if not names:
+        q_names = packet.extract_question_names()
+        a_names = packet.extract_answer_names()
+        if not q_names and not a_names:
             return
+
+        names_desc = f"questions: {sorted(q_names)}, answers: {sorted(a_names)}"
 
         for dst_interface, sock in list(self.sockets.items()):
             if dst_interface == src_interface:
                 continue
 
-            if self.config.should_forward(src_interface, dst_interface, names):
+            if self.config.should_forward(src_interface, dst_interface, q_names, a_names):
                 if self.verbosity >= 2:
                     logger.debug(
                         "Forwarding mDNS packet (%d bytes) from %s -> %s for names: %s",
                         len(data),
                         src_interface,
                         dst_interface,
-                        names,
+                        names_desc,
                     )
                 try:
                     sock.sendto(data, ("224.0.0.251", 5353))
@@ -186,7 +189,7 @@ class MdnsReflector:
                         "Denied mDNS packet from %s -> %s for names: %s",
                         src_interface,
                         dst_interface,
-                        names,
+                        names_desc,
                     )
 
     # pylint: disable=too-many-branches
