@@ -7,7 +7,7 @@ matches incoming packet metadata against defined interface routing and wildcard 
 
 from dataclasses import dataclass, field
 import fnmatch
-from typing import List, Set
+from typing import Any, Dict, List, Set
 import yaml
 
 
@@ -19,11 +19,18 @@ class ConfigurationError(ValueError):
 class FilterRule:
     """Represents a specific filtering and routing rule."""
 
-    action: str  # "allow" or "deny"
-    services: List[str] = field(default_factory=list)
-    hosts: List[str] = field(default_factory=list)
-    src: str = "*"
-    dst: str = "*"
+    action: bool  # True to allow/forward matching packets, False to deny/block
+    services: List[str] = field(
+        default_factory=list
+    )  # List of service type wildcard patterns to match
+    hosts: List[str] = field(default_factory=list)  # List of hostname wildcard patterns to match
+    src: str = "*"  # Source physical interface name or "*" to match any source interface
+    dst: str = "*"  # Destination physical interface name or "*" to match any destination interface
+
+    def __post_init__(self) -> None:
+        """Cleans and canonicalizes match patterns ahead of time for high performance."""
+        self.services = [s.rstrip(".").lower() for s in self.services]
+        self.hosts = [h.rstrip(".").lower() for h in self.hosts]
 
     def applies_to(self, src_interface: str, dst_interface: str) -> bool:
         """Checks if this rule matches the source and destination routing path."""
@@ -44,14 +51,12 @@ class FilterRule:
             clean_name = name.rstrip(".").lower()
 
             if self.services:
-                for pattern in self.services:
-                    clean_pattern = pattern.rstrip(".").lower()
+                for clean_pattern in self.services:
                     if fnmatch.fnmatchcase(clean_name, clean_pattern):
                         return True
 
             if self.hosts:
-                for pattern in self.hosts:
-                    clean_pattern = pattern.rstrip(".").lower()
+                for clean_pattern in self.hosts:
                     if fnmatch.fnmatchcase(clean_name, clean_pattern):
                         return True
 
@@ -77,12 +82,50 @@ class AppConfig:
         for rule in self.rules:
             if rule.applies_to(src_interface, dst_interface):
                 if rule.matches_packet(packet_names):
-                    return rule.action == "allow"
+                    return rule.action
 
         return self.default_action == "allow"
 
 
-# pylint: disable=too-many-branches
+def _parse_rule(idx: int, r: Dict[str, Any], interfaces: List[str]) -> FilterRule:
+    """
+    Parses and validates a single filtering rule dictionary.
+    Raises ConfigurationError if the rule structure is invalid.
+    """
+    if not isinstance(r, dict):
+        raise ConfigurationError(f"Rule at index {idx} must be a dictionary")
+
+    action = r.get("action")
+    if action not in ("allow", "deny"):
+        raise ConfigurationError(
+            f"Rule {idx} missing or invalid 'action' (must be 'allow' or 'deny')"
+        )
+
+    src = r.get("src", "*")
+    dst = r.get("dst", "*")
+
+    # Typos in interfaces check
+    if src != "*" and src not in interfaces:
+        raise ConfigurationError(
+            f"Rule {idx} source interface '{src}' not listed in global interfaces"
+        )
+    if dst != "*" and dst not in interfaces:
+        raise ConfigurationError(
+            f"Rule {idx} destination interface '{dst}' not listed in global interfaces"
+        )
+
+    services = r.get("services", [])
+    if not isinstance(services, list) or not all(isinstance(s, str) for s in services):
+        raise ConfigurationError(f"Rule {idx} 'services' must be a list of strings")
+
+    hosts = r.get("hosts", [])
+    if not isinstance(hosts, list) or not all(isinstance(h, str) for h in hosts):
+        raise ConfigurationError(f"Rule {idx} 'hosts' must be a list of strings")
+
+    is_allow = action == "allow"
+    return FilterRule(action=is_allow, services=services, hosts=hosts, src=src, dst=dst)
+
+
 def load_config(config_path: str) -> AppConfig:
     """
     Parses and thoroughly validates a yaml configuration file.
@@ -118,36 +161,6 @@ def load_config(config_path: str) -> AppConfig:
 
     rules: List[FilterRule] = []
     for idx, r in enumerate(raw_rules):
-        if not isinstance(r, dict):
-            raise ConfigurationError(f"Rule at index {idx} must be a dictionary")
-
-        action = r.get("action")
-        if action not in ("allow", "deny"):
-            raise ConfigurationError(
-                f"Rule {idx} missing or invalid 'action' (must be 'allow' or 'deny')"
-            )
-
-        src = r.get("src", "*")
-        dst = r.get("dst", "*")
-
-        # Typos in interfaces check
-        if src != "*" and src not in interfaces:
-            raise ConfigurationError(
-                f"Rule {idx} source interface '{src}' not listed in global interfaces"
-            )
-        if dst != "*" and dst not in interfaces:
-            raise ConfigurationError(
-                f"Rule {idx} destination interface '{dst}' not listed in global interfaces"
-            )
-
-        services = r.get("services", [])
-        if not isinstance(services, list) or not all(isinstance(s, str) for s in services):
-            raise ConfigurationError(f"Rule {idx} 'services' must be a list of strings")
-
-        hosts = r.get("hosts", [])
-        if not isinstance(hosts, list) or not all(isinstance(h, str) for h in hosts):
-            raise ConfigurationError(f"Rule {idx} 'hosts' must be a list of strings")
-
-        rules.append(FilterRule(action=action, services=services, hosts=hosts, src=src, dst=dst))
+        rules.append(_parse_rule(idx, r, interfaces))
 
     return AppConfig(interfaces=interfaces, default_action=default_action, rules=rules)

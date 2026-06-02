@@ -7,7 +7,6 @@ and operating system signal traps for clean terminations.
 
 import argparse
 
-# pylint: disable=broad-exception-caught
 import logging
 import signal
 import sys
@@ -59,7 +58,7 @@ def main() -> None:
     except ConfigurationError as e:
         logger.error("Configuration failure: %s", str(e))
         sys.exit(1)
-    except Exception as e:
+    except Exception as e:  # pylint: disable=broad-exception-caught
         logger.error("Unexpected error loading configuration: %s", str(e))
         if args.verbose:
             logging.exception(e)
@@ -83,7 +82,7 @@ def main() -> None:
     except KeyboardInterrupt:
         logger.info("Keyboard interrupt received. Stopping...")
         reflector.stop()
-    except Exception as e:
+    except Exception as e:  # pylint: disable=broad-exception-caught
         logger.error("Fatal exception in main event loop: %s", str(e))
         if args.verbose:
             logging.exception(e)

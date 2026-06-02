@@ -7,7 +7,6 @@ runs the select-based event loop, and handles dynamic interface failures and rec
 
 import errno
 
-# pylint: disable=broad-exception-caught
 import logging
 import select
 import socket
@@ -58,7 +57,7 @@ class MdnsReflector:
             info = fcntl.ioctl(s.fileno(), 0x8915, packed_ifname)
             # IPv4 address is in bytes 20-24 of the returned ifreq structure
             return socket.inet_ntoa(info[20:24])
-        except Exception as e:
+        except OSError as e:
             raise OSError(f"Failed to resolve IP for interface {ifname}: {str(e)}") from e
         finally:
             s.close()
@@ -86,7 +85,7 @@ class MdnsReflector:
             # Bind strictly to the physical device to prevent interface crosstalk (Linux specific)
             try:
                 sock.setsockopt(socket.SOL_SOCKET, socket.SO_BINDTODEVICE, ifname.encode("utf-8"))
-            except Exception as e:
+            except OSError as e:
                 logger.warning(
                     "SO_BINDTODEVICE failed for %s: %s. Relying on membership isolation.",
                     ifname,
@@ -116,7 +115,7 @@ class MdnsReflector:
             )
             return sock
 
-        except Exception as e:
+        except OSError as e:
             sock.close()
             raise OSError(f"Socket setup failed for {ifname}: {str(e)}") from e
 
@@ -130,7 +129,7 @@ class MdnsReflector:
             try:
                 sock = self.setup_socket(ifname)
                 self.sockets[ifname] = sock
-            except Exception as e:
+            except OSError as e:
                 logger.warning("Interface %s is unavailable: %s. Will retry.", ifname, str(e))
                 still_offline.add(ifname)
 
@@ -143,7 +142,7 @@ class MdnsReflector:
         if sock:
             try:
                 sock.close()
-            except Exception:
+            except OSError:
                 pass
         self.interface_ips.pop(ifname, None)
         self.offline_interfaces.add(ifname)
@@ -216,23 +215,24 @@ class MdnsReflector:
                     list(active_sockets.keys()),
                     1.0,  # Timeout of 1s to allow periodic interface retry checks
                 )
-            except select.error as e:
+            except OSError as e:
                 # Interrupted system calls (EINTR) are expected when signals arrive
                 if getattr(e, "errno", None) == errno.EINTR:
                     continue
+                # General bad file descriptor/socket select error (EBADF)
+                if getattr(e, "errno", None) == errno.EBADF:
+                    logger.error("General select error: %s", str(e))
+                    # Clean up any bad file descriptors in our socket map
+                    for ifname, sock in list(self.sockets.items()):
+                        try:
+                            select.select([sock], [], [], 0.0)
+                        except OSError:
+                            logger.error("Detected bad socket on %s", ifname)
+                            self.mark_interface_offline(ifname)
+                    continue
+
                 logger.error("Select exception: %s", str(e))
                 time.sleep(0.5)
-                continue
-            except Exception as e:
-                # General exception in select (e.g. bad file descriptor)
-                logger.error("General select error: %s", str(e))
-                # Clean up any bad file descriptors in our socket map
-                for ifname, sock in list(self.sockets.items()):
-                    try:
-                        select.select([sock], [], [], 0.0)
-                    except Exception:
-                        logger.error("Detected bad socket on %s", ifname)
-                        self.mark_interface_offline(ifname)
                 continue
 
             # Handle socket errors reported by select
@@ -264,7 +264,7 @@ class MdnsReflector:
         for sock in list(self.sockets.values()):
             try:
                 sock.close()
-            except Exception:
+            except OSError:
                 pass
         self.sockets.clear()
         self.interface_ips.clear()

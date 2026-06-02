@@ -52,12 +52,12 @@ rules:
         self.assertEqual(config.default_action, "deny")
         self.assertEqual(len(config.rules), 2)
 
-        self.assertEqual(config.rules[0].action, "allow")
+        self.assertTrue(config.rules[0].action)
         self.assertEqual(config.rules[0].services, ["_googlecast._tcp.local"])
         self.assertEqual(config.rules[0].src, "*")
         self.assertEqual(config.rules[0].dst, "*")
 
-        self.assertEqual(config.rules[1].action, "deny")
+        self.assertFalse(config.rules[1].action)
         self.assertEqual(config.rules[1].hosts, ["spotted-tv.local"])
         self.assertEqual(config.rules[1].src, "eth0")
         self.assertEqual(config.rules[1].dst, "wlan0")
@@ -93,15 +93,15 @@ rules:
         rules = [
             # Block Spotify from eth1 to wlan0
             FilterRule(
-                action="deny",
+                action=False,
                 services=["_spotify-connect._tcp.local"],
                 src="eth1",
                 dst="wlan0",
             ),
             # Allow general Google Cast everywhere
-            FilterRule(action="allow", services=["_googlecast._tcp.local"], src="*", dst="*"),
+            FilterRule(action=True, services=["_googlecast._tcp.local"], src="*", dst="*"),
             # Allow specific local apple tv host
-            FilterRule(action="allow", hosts=["*.local"], src="eth0", dst="eth1"),
+            FilterRule(action=True, hosts=["*.local"], src="eth0", dst="eth1"),
         ]
         config = AppConfig(interfaces=["eth0", "eth1", "wlan0"], default_action="deny", rules=rules)
 
