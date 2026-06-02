@@ -8,7 +8,7 @@ matches incoming packet metadata against defined interface routing and wildcard 
 from dataclasses import dataclass, field
 from enum import Enum
 import fnmatch
-from typing import Any, Dict, List, Optional, Set
+from typing import Any, Dict, List, Optional, Set, Union
 import yaml
 
 
@@ -33,8 +33,8 @@ class FilterRule:
         default_factory=list
     )  # List of service type wildcard patterns to match
     hosts: List[str] = field(default_factory=list)  # List of hostname wildcard patterns to match
-    src: str = "*"  # Source physical interface name or "*" to match any source interface
-    dst: str = "*"  # Destination physical interface name or "*" to match any destination interface
+    src: Union[str, List[str]] = "*"  # Source physical interface name, list, or "*"
+    dst: Union[str, List[str]] = "*"  # Destination physical interface name, list, or "*"
     section: RuleSection = RuleSection.ANY  # Targets questions, answers, or any packet section
 
     def __post_init__(self) -> None:
@@ -44,8 +44,20 @@ class FilterRule:
 
     def applies_to(self, src_interface: str, dst_interface: str) -> bool:
         """Checks if this rule matches the source and destination routing path."""
-        src_match = self.src in ("*", src_interface)
-        dst_match = self.dst in ("*", dst_interface)
+        if isinstance(self.src, str):
+            src_match = self.src in ("*", src_interface)
+        elif isinstance(self.src, (list, set)):
+            src_match = "*" in self.src or src_interface in self.src
+        else:
+            src_match = False
+
+        if isinstance(self.dst, str):
+            dst_match = self.dst in ("*", dst_interface)
+        elif isinstance(self.dst, (list, set)):
+            dst_match = "*" in self.dst or dst_interface in self.dst
+        else:
+            dst_match = False
+
         return src_match and dst_match
 
     def matches_packet(self, question_names: Set[str], answer_names: Set[str]) -> bool:
@@ -116,6 +128,7 @@ class AppConfig:
         return self.default_action == "allow"
 
 
+# pylint: disable=too-many-locals,too-many-branches
 def _parse_rule(idx: int, r: Dict[str, Any], interfaces: List[str]) -> FilterRule:
     """
     Parses and validates a single filtering rule dictionary.
@@ -131,17 +144,32 @@ def _parse_rule(idx: int, r: Dict[str, Any], interfaces: List[str]) -> FilterRul
         )
 
     src = r.get("src", "*")
-    dst = r.get("dst", "*")
+    if isinstance(src, str):
+        src_list = [src]
+    elif isinstance(src, list) and all(isinstance(s, str) for s in src):
+        src_list = src
+    else:
+        raise ConfigurationError(f"Rule {idx} 'src' must be a string or a list of strings")
 
-    # Typos in interfaces check
-    if src != "*" and src not in interfaces:
-        raise ConfigurationError(
-            f"Rule {idx} source interface '{src}' not listed in global interfaces"
-        )
-    if dst != "*" and dst not in interfaces:
-        raise ConfigurationError(
-            f"Rule {idx} destination interface '{dst}' not listed in global interfaces"
-        )
+    for s in src_list:
+        if s != "*" and s not in interfaces:
+            raise ConfigurationError(
+                f"Rule {idx} source interface '{s}' not listed in global interfaces"
+            )
+
+    dst = r.get("dst", "*")
+    if isinstance(dst, str):
+        dst_list = [dst]
+    elif isinstance(dst, list) and all(isinstance(d, str) for d in dst):
+        dst_list = dst
+    else:
+        raise ConfigurationError(f"Rule {idx} 'dst' must be a string or a list of strings")
+
+    for d in dst_list:
+        if d != "*" and d not in interfaces:
+            raise ConfigurationError(
+                f"Rule {idx} destination interface '{d}' not listed in global interfaces"
+            )
 
     services = r.get("services", [])
     if not isinstance(services, list) or not all(isinstance(s, str) for s in services):

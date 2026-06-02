@@ -121,6 +121,75 @@ rules:
         # 5. Casing and trailing dot canonicalization checks
         self.assertTrue(config.should_forward("eth0", "eth1", {"My-Device.Local."}))
 
+    def test_routing_with_lists(self) -> None:
+        """Verifies routing logic handles list values for src and dst correctly."""
+        rules = [
+            FilterRule(
+                action=True,
+                services=["_googlecast._tcp.local"],
+                src=["eth0", "eth1"],
+                dst=["eth2"],
+            )
+        ]
+        config = AppConfig(
+            interfaces=["eth0", "eth1", "eth2"],
+            default_action="deny",
+            rules=rules,
+        )
+
+        # Allowed because source is in list and dest is in list
+        self.assertTrue(config.should_forward("eth0", "eth2", {"_googlecast._tcp.local"}))
+        self.assertTrue(config.should_forward("eth1", "eth2", {"_googlecast._tcp.local"}))
+
+        # Denied because source interface is not in src list
+        self.assertFalse(config.should_forward("eth2", "eth0", {"_googlecast._tcp.local"}))
+
+    def test_config_src_dst_list_parsing(self) -> None:
+        """Verifies parsing of configurations with list src and dst fields."""
+        yaml_content = """
+interfaces:
+  - eth0
+  - eth1
+  - eth2
+default_action: deny
+rules:
+  - action: allow
+    src: [eth0, eth1]
+    dst: eth2
+    services: [_googlecast._tcp.local]
+"""
+        with patch("builtins.open", return_value=io.StringIO(yaml_content)):
+            config = load_config("mock_config.yaml")
+
+        self.assertEqual(config.rules[0].src, ["eth0", "eth1"])
+        self.assertEqual(config.rules[0].dst, "eth2")
+
+    def test_config_src_dst_invalid_list(self) -> None:
+        """Verifies config loading raises error for invalid types in src/dst lists."""
+        yaml_bad_src = """
+interfaces: [eth0, eth1]
+default_action: deny
+rules:
+  - action: allow
+    src: 12345
+    dst: eth1
+"""
+        with patch("builtins.open", return_value=io.StringIO(yaml_bad_src)):
+            with self.assertRaises(ConfigurationError):
+                load_config("mock.yaml")
+
+        yaml_bad_dst = """
+interfaces: [eth0, eth1]
+default_action: deny
+rules:
+  - action: allow
+    src: eth0
+    dst: [eth1, 999]
+"""
+        with patch("builtins.open", return_value=io.StringIO(yaml_bad_dst)):
+            with self.assertRaises(ConfigurationError):
+                load_config("mock.yaml")
+
 
 class TestMdnsParser(unittest.TestCase):
     """Verifies raw binary decoding and robust security boundaries."""
@@ -379,7 +448,7 @@ rules:
             ),
         ]
         config = AppConfig(interfaces=["eth0", "eth1"], default_action="deny", rules=rules)
-        reflector = MdnsReflector(config, verbosity=2)
+        reflector = MdnsReflector(config)
 
         mock_sock_eth0 = MagicMock()
         mock_sock_eth1 = MagicMock()
@@ -402,7 +471,7 @@ rules:
         )
         self.assertTrue(any_forward_log, f"Log was not found: {called_debug_messages}")
 
-        # 2. Denied packet logging (verbosity 1 or 2)
+        # 2. Denied packet logging (verbosity >= 2)
         mock_logger.reset_mock()
         reflector.handle_packet("eth1", q_packet)
         called_debug_messages = [
@@ -413,6 +482,53 @@ rules:
             for msg in called_debug_messages
         )
         self.assertTrue(any_deny_log, f"Log was not found: {called_debug_messages}")
+
+    @patch("select.select")
+    @patch("mdns_sieve.reflector.logger")
+    def test_logging_warning_mixed_records(
+        self, mock_logger: MagicMock, _mock_select: MagicMock
+    ) -> None:
+        """
+        Verifies that dropping a packet with mixed allowed/denied Q/A records
+        logs an info message (representing the first verbose level).
+        """
+        rules = [
+            FilterRule(
+                action=False, services=["*"], src="eth0", dst="eth1", section=RuleSection.ANSWERS
+            ),
+            FilterRule(
+                action=True, services=["*"], src="eth0", dst="eth1", section=RuleSection.QUESTIONS
+            ),
+        ]
+        config = AppConfig(interfaces=["eth0", "eth1"], default_action="deny", rules=rules)
+        reflector = MdnsReflector(config)
+
+        mock_sock_eth0 = MagicMock()
+        mock_sock_eth1 = MagicMock()
+        reflector.sockets = {"eth0": mock_sock_eth0, "eth1": mock_sock_eth1}
+        reflector.interface_ips = {"eth0": "192.168.1.1", "eth1": "192.168.2.1"}
+
+        # Construct a packet with 1 Question and 1 Answer
+        header = struct.pack("!HHHHHH", 0, 0, 1, 1, 0, 0)
+        question = b"\x05local\x00" + struct.pack("!HH", 12, 1)
+        answer = b"\x05local\x00" + struct.pack("!HHIH", 12, 1, 120, 0)
+        mixed_packet = header + question + answer
+
+        # Process packet
+        reflector.handle_packet("eth0", mixed_packet)
+
+        # It should be blocked (not sent on eth1)
+        mock_sock_eth1.sendto.assert_not_called()
+
+        # Warning/Info logger should be called with info level (first verbose level)
+        called_info_messages = [
+            call[0][0] % call[0][1:] for call in mock_logger.info.call_args_list
+        ]
+        any_warning = any(
+            "Dropped mDNS packet" in msg and "mixture of allowed/denied" in msg
+            for msg in called_info_messages
+        )
+        self.assertTrue(any_warning, f"Info log not found: {called_info_messages}")
 
 
 if __name__ == "__main__":

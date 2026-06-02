@@ -20,9 +20,14 @@ from mdns_sieve.reflector import MdnsReflector
 LOG_FORMAT = "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
 
 
-def setup_logging(verbose: bool) -> None:
+def setup_logging(verbose_count: int) -> None:
     """Configures system wide logging format and depth."""
-    level = logging.DEBUG if verbose else logging.INFO
+    if verbose_count == 0:
+        level = logging.WARNING
+    elif verbose_count == 1:
+        level = logging.INFO
+    else:
+        level = logging.DEBUG
     logging.basicConfig(
         level=level, format=LOG_FORMAT, handlers=[logging.StreamHandler(sys.stderr)]
     )
@@ -48,7 +53,7 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    setup_logging(args.verbose >= 1)
+    setup_logging(args.verbose)
     logger = logging.getLogger("mdns_sieve")
 
     logger.info("Initializing mdns-sieve...")
@@ -60,11 +65,11 @@ def main() -> None:
         sys.exit(1)
     except Exception as e:  # pylint: disable=broad-exception-caught
         logger.error("Unexpected error loading configuration: %s", str(e))
-        if args.verbose:
+        if logger.isEnabledFor(logging.DEBUG):
             logging.exception(e)
         sys.exit(1)
 
-    reflector = MdnsReflector(config, verbosity=args.verbose)
+    reflector = MdnsReflector(config)
 
     def signal_handler(signum: int, frame: Optional[FrameType]) -> None:
         # pylint: disable=unused-argument
@@ -84,7 +89,7 @@ def main() -> None:
         reflector.stop()
     except Exception as e:  # pylint: disable=broad-exception-caught
         logger.error("Fatal exception in main event loop: %s", str(e))
-        if args.verbose:
+        if logger.isEnabledFor(logging.DEBUG):
             logging.exception(e)
         reflector.stop()
         sys.exit(1)
