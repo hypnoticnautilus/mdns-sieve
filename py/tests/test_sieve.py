@@ -32,14 +32,14 @@ interfaces:
   - eth0
   - eth1
   - wlan0
-default_action: deny
+default_action: drop
 rules:
-  - action: allow
+  - action: forward
     services:
       - "_googlecast._tcp.local"
     src: "*"
     dst: "*"
-  - action: deny
+  - action: drop
     hosts:
       - "spotted-tv.local"
     src: eth0
@@ -49,7 +49,7 @@ rules:
             config = load_config("mock_config.yaml")
 
         self.assertEqual(config.interfaces, ["eth0", "eth1", "wlan0"])
-        self.assertEqual(config.default_action, "deny")
+        self.assertEqual(config.default_action, "drop")
         self.assertEqual(len(config.rules), 2)
 
         self.assertTrue(config.rules[0].action)
@@ -65,7 +65,7 @@ rules:
     def test_validation_errors(self) -> None:
         """Verifies that malformed or incomplete YAML raises ConfigurationError."""
         # Missing interfaces
-        with patch("builtins.open", return_value=io.StringIO("default_action: allow")):
+        with patch("builtins.open", return_value=io.StringIO("default_action: forward")):
             with self.assertRaises(ConfigurationError):
                 load_config("mock.yaml")
 
@@ -79,9 +79,9 @@ rules:
         yaml_bad_iface = """
 interfaces:
   - eth0
-default_action: deny
+default_action: drop
 rules:
-  - action: allow
+  - action: forward
     src: invalid_interface_name
 """
         with patch("builtins.open", return_value=io.StringIO(yaml_bad_iface)):
@@ -91,31 +91,31 @@ rules:
     def test_routing_logic(self) -> None:
         """Verifies rules are evaluated in order and match names correctly."""
         rules = [
-            # Block Spotify from eth1 to wlan0
+            # Drop Spotify from eth1 to wlan0
             FilterRule(
                 action=False,
                 services=["_spotify-connect._tcp.local"],
                 src="eth1",
                 dst="wlan0",
             ),
-            # Allow general Google Cast everywhere
+            # Forward general Google Cast everywhere
             FilterRule(action=True, services=["_googlecast._tcp.local"], src="*", dst="*"),
-            # Allow specific local apple tv host
+            # Forward specific local apple tv host
             FilterRule(action=True, hosts=["*.local"], src="eth0", dst="eth1"),
         ]
-        config = AppConfig(interfaces=["eth0", "eth1", "wlan0"], default_action="deny", rules=rules)
+        config = AppConfig(interfaces=["eth0", "eth1", "wlan0"], default_action="drop", rules=rules)
 
-        # 1. Deny rule matches Spotify from eth1 -> wlan0
+        # 1. Drop rule matches Spotify from eth1 -> wlan0
         self.assertFalse(config.should_forward("eth1", "wlan0", {"_spotify-connect._tcp.local"}))
 
         # 2. Spotify from eth1 -> eth0 is not blocked by that specific rule, falls back to default
-        #    deny
+        #    drop
         self.assertFalse(config.should_forward("eth1", "eth0", {"_spotify-connect._tcp.local"}))
 
-        # 3. Google Cast from eth1 -> wlan0 is allowed
+        # 3. Google Cast from eth1 -> wlan0 is forwarded (action=True)
         self.assertTrue(config.should_forward("eth1", "wlan0", {"_googlecast._tcp.local"}))
 
-        # 4. Host match wildcard *.local from eth0 -> eth1 is allowed
+        # 4. Host match wildcard *.local from eth0 -> eth1 is forwarded (action=True)
         self.assertTrue(config.should_forward("eth0", "eth1", {"my-device.local"}))
 
         # 5. Casing and trailing dot canonicalization checks
@@ -133,15 +133,15 @@ rules:
         ]
         config = AppConfig(
             interfaces=["eth0", "eth1", "eth2"],
-            default_action="deny",
+            default_action="drop",
             rules=rules,
         )
 
-        # Allowed because source is in list and dest is in list
+        # Forwarded because source is in list and dest is in list
         self.assertTrue(config.should_forward("eth0", "eth2", {"_googlecast._tcp.local"}))
         self.assertTrue(config.should_forward("eth1", "eth2", {"_googlecast._tcp.local"}))
 
-        # Denied because source interface is not in src list
+        # Dropped because source interface is not in src list
         self.assertFalse(config.should_forward("eth2", "eth0", {"_googlecast._tcp.local"}))
 
     def test_config_src_dst_list_parsing(self) -> None:
@@ -151,9 +151,9 @@ interfaces:
   - eth0
   - eth1
   - eth2
-default_action: deny
+default_action: drop
 rules:
-  - action: allow
+  - action: forward
     src: [eth0, eth1]
     dst: eth2
     services: [_googlecast._tcp.local]
@@ -168,9 +168,9 @@ rules:
         """Verifies config loading raises error for invalid types in src/dst lists."""
         yaml_bad_src = """
 interfaces: [eth0, eth1]
-default_action: deny
+default_action: drop
 rules:
-  - action: allow
+  - action: forward
     src: 12345
     dst: eth1
 """
@@ -180,9 +180,9 @@ rules:
 
         yaml_bad_dst = """
 interfaces: [eth0, eth1]
-default_action: deny
+default_action: drop
 rules:
-  - action: allow
+  - action: forward
     src: eth0
     dst: [eth1, 999]
 """
@@ -279,7 +279,7 @@ class TestReflectorEngine(unittest.TestCase):
         mock_sock = MagicMock()
         mock_socket.return_value = mock_sock
 
-        config = AppConfig(interfaces=["eth0"], default_action="deny")
+        config = AppConfig(interfaces=["eth0"], default_action="drop")
         reflector = MdnsReflector(config)
         sock = reflector.setup_socket("eth0")
 
@@ -292,7 +292,7 @@ class TestReflectorEngine(unittest.TestCase):
     @patch("select.select")
     def test_forwarding_loop_exclusion(self, mock_select: MagicMock) -> None:  # pylint: disable=unused-argument
         """Verifies packets are forwarded based on rules, and never reflected back to source."""
-        config = AppConfig(interfaces=["eth0", "eth1"], default_action="allow")
+        config = AppConfig(interfaces=["eth0", "eth1"], default_action="forward")
         reflector = MdnsReflector(config)
 
         # Mock the two interface sockets
@@ -323,15 +323,15 @@ class TestQAFiltering(unittest.TestCase):
         """Verifies parsing of the 'section' field in rules YAML."""
         yaml_content = """
 interfaces: [eth0, eth1]
-default_action: deny
+default_action: drop
 rules:
-  - action: allow
+  - action: forward
     section: questions
     services: [_googlecast._tcp.local]
-  - action: deny
+  - action: drop
     section: answers
     hosts: [badhost.local]
-  - action: allow
+  - action: forward
     section: invalid_section_name
 """
         with patch("builtins.open", return_value=io.StringIO(yaml_content)):
@@ -378,10 +378,10 @@ rules:
     def test_unidirectional_forwarding(self, _mock_select: MagicMock) -> None:
         """Verifies end-to-end unidirectional discovery between Trusted and IoT VLANs."""
         # Rules:
-        # - Allow Questions: eth0 (Trusted) -> eth1 (IoT)
-        # - Deny Questions: eth1 (IoT) -> eth0 (Trusted)
-        # - Allow Answers: eth1 (IoT) -> eth0 (Trusted)
-        # - Deny Answers: eth0 (Trusted) -> eth1 (IoT)
+        # - Forward Questions: eth0 (Trusted) -> eth1 (IoT)
+        # - Drop Questions: eth1 (IoT) -> eth0 (Trusted)
+        # - Forward Answers: eth1 (IoT) -> eth0 (Trusted)
+        # - Drop Answers: eth0 (Trusted) -> eth1 (IoT)
         rules = [
             FilterRule(
                 action=True, services=["*"], src="eth0", dst="eth1", section=RuleSection.QUESTIONS
@@ -396,7 +396,7 @@ rules:
                 action=False, services=["*"], src="eth0", dst="eth1", section=RuleSection.ANSWERS
             ),
         ]
-        config = AppConfig(interfaces=["eth0", "eth1"], default_action="deny", rules=rules)
+        config = AppConfig(interfaces=["eth0", "eth1"], default_action="drop", rules=rules)
         reflector = MdnsReflector(config)
 
         mock_sock_eth0 = MagicMock()
@@ -416,22 +416,22 @@ rules:
             + struct.pack("!HHIH", 12, 1, 120, 0)
         )
 
-        # A. Trusted asks IoT (Question eth0 -> eth1): ALLOWED
+        # A. Trusted asks IoT (Question eth0 -> eth1): FORWARDED
         mock_sock_eth1.sendto.reset_mock()
         reflector.handle_packet("eth0", q_packet)
         mock_sock_eth1.sendto.assert_called_once_with(q_packet, ("224.0.0.251", 5353))
 
-        # B. IoT responds to Trusted (Answer eth1 -> eth0): ALLOWED
+        # B. IoT responds to Trusted (Answer eth1 -> eth0): FORWARDED
         mock_sock_eth0.sendto.reset_mock()
         reflector.handle_packet("eth1", a_packet)
         mock_sock_eth0.sendto.assert_called_once_with(a_packet, ("224.0.0.251", 5353))
 
-        # C. IoT asks Trusted (Question eth1 -> eth0): BLOCKED
+        # C. IoT asks Trusted (Question eth1 -> eth0): DROPPED
         mock_sock_eth0.reset_mock()
         reflector.handle_packet("eth1", q_packet)
         mock_sock_eth0.sendto.assert_not_called()
 
-        # D. Trusted responds to IoT (Answer eth0 -> eth1): BLOCKED
+        # D. Trusted responds to IoT (Answer eth0 -> eth1): DROPPED
         mock_sock_eth1.reset_mock()
         reflector.handle_packet("eth0", a_packet)
         mock_sock_eth1.sendto.assert_not_called()
@@ -441,13 +441,13 @@ rules:
     def test_logging_indicates_section(
         self, mock_logger: MagicMock, _mock_select: MagicMock
     ) -> None:
-        """Verifies that allowed and denied packet logs include the section name categorization."""
+        """Verifies that forwarded and dropped packet logs include the section categorization."""
         rules = [
             FilterRule(
                 action=True, services=["*"], src="eth0", dst="eth1", section=RuleSection.QUESTIONS
             ),
         ]
-        config = AppConfig(interfaces=["eth0", "eth1"], default_action="deny", rules=rules)
+        config = AppConfig(interfaces=["eth0", "eth1"], default_action="drop", rules=rules)
         reflector = MdnsReflector(config)
 
         mock_sock_eth0 = MagicMock()
@@ -460,7 +460,7 @@ rules:
             struct.pack("!HHHHHH", 0, 0, 1, 0, 0, 0) + b"\x05local\x00" + struct.pack("!HH", 12, 1)
         )
 
-        # 1. Allowed packet logging (verbosity 2)
+        # 1. Forwarded packet logging (verbosity >= 2)
         reflector.handle_packet("eth0", q_packet)
         called_debug_messages = [
             call[0][0] % call[0][1:] for call in mock_logger.debug.call_args_list
@@ -471,17 +471,17 @@ rules:
         )
         self.assertTrue(any_forward_log, f"Log was not found: {called_debug_messages}")
 
-        # 2. Denied packet logging (verbosity >= 2)
+        # 2. Dropped packet logging (verbosity >= 2)
         mock_logger.reset_mock()
         reflector.handle_packet("eth1", q_packet)
         called_debug_messages = [
             call[0][0] % call[0][1:] for call in mock_logger.debug.call_args_list
         ]
-        any_deny_log = any(
-            "Denied" in msg and "questions: ['local'], answers: []" in msg
+        any_drop_log = any(
+            "Dropped" in msg and "questions: ['local'], answers: []" in msg
             for msg in called_debug_messages
         )
-        self.assertTrue(any_deny_log, f"Log was not found: {called_debug_messages}")
+        self.assertTrue(any_drop_log, f"Log was not found: {called_debug_messages}")
 
     @patch("select.select")
     @patch("mdns_sieve.reflector.logger")
@@ -489,7 +489,7 @@ rules:
         self, mock_logger: MagicMock, _mock_select: MagicMock
     ) -> None:
         """
-        Verifies that dropping a packet with mixed allowed/denied Q/A records
+        Verifies that dropping a packet with mixed forwarded/dropped Q/A records
         logs an info message (representing the first verbose level).
         """
         rules = [
@@ -500,7 +500,7 @@ rules:
                 action=True, services=["*"], src="eth0", dst="eth1", section=RuleSection.QUESTIONS
             ),
         ]
-        config = AppConfig(interfaces=["eth0", "eth1"], default_action="deny", rules=rules)
+        config = AppConfig(interfaces=["eth0", "eth1"], default_action="drop", rules=rules)
         reflector = MdnsReflector(config)
 
         mock_sock_eth0 = MagicMock()
@@ -525,7 +525,7 @@ rules:
             call[0][0] % call[0][1:] for call in mock_logger.info.call_args_list
         ]
         any_warning = any(
-            "Dropped mDNS packet" in msg and "mixture of allowed/denied" in msg
+            "Dropped mDNS packet" in msg and "mixture of forwarded/dropped" in msg
             for msg in called_info_messages
         )
         self.assertTrue(any_warning, f"Info log not found: {called_info_messages}")

@@ -149,7 +149,7 @@ class MdnsReflector:
 
     # pylint: disable=too-many-branches
     def handle_packet(self, src_interface: str, data: bytes) -> None:
-        """Parses a packet, evaluates filtering rules, and replicates to allowed interfaces."""
+        """Parses a packet, evaluates filtering rules, and replicates to forwarded interfaces."""
         try:
             packet = parse_mdns_packet(data)
         except MdnsParsingError as e:
@@ -185,26 +185,26 @@ class MdnsReflector:
             else:
                 is_mixed = False
                 if q_names and a_names:
-                    q_allowed = self.config.should_forward(
+                    q_forward = self.config.should_forward(
                         src_interface, dst_interface, q_names, set()
                     )
-                    a_allowed = self.config.should_forward(
+                    a_forward = self.config.should_forward(
                         src_interface, dst_interface, set(), a_names
                     )
-                    if q_allowed != a_allowed:
+                    if q_forward != a_forward:
                         is_mixed = True
 
                 if is_mixed:
                     logger.info(
                         "Dropped mDNS packet from %s -> %s containing a mixture "
-                        "of allowed/denied questions and answers. Names: %s",
+                        "of forwarded/dropped questions and answers. Names: %s",
                         src_interface,
                         dst_interface,
                         names_desc,
                     )
                 else:
                     logger.debug(
-                        "Denied mDNS packet from %s -> %s for names: %s",
+                        "Dropped mDNS packet from %s -> %s for names: %s",
                         src_interface,
                         dst_interface,
                         names_desc,

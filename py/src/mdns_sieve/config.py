@@ -28,7 +28,7 @@ class ConfigurationError(ValueError):
 class FilterRule:
     """Represents a specific filtering and routing rule."""
 
-    action: bool  # True to allow/forward matching packets, False to deny/block
+    action: bool  # True to forward matching packets, False to drop/block
     services: List[str] = field(
         default_factory=list
     )  # List of service type wildcard patterns to match
@@ -97,7 +97,7 @@ class AppConfig:
     """Represents the global application configuration."""
 
     interfaces: List[str]
-    default_action: str  # "allow" or "deny"
+    default_action: str  # "forward" or "drop"
     rules: List[FilterRule] = field(default_factory=list)
 
     def should_forward(
@@ -125,7 +125,7 @@ class AppConfig:
                 if rule.matches_packet(q_names, a_names):
                     return rule.action
 
-        return self.default_action == "allow"
+        return self.default_action == "forward"
 
 
 # pylint: disable=too-many-locals,too-many-branches
@@ -138,9 +138,9 @@ def _parse_rule(idx: int, r: Dict[str, Any], interfaces: List[str]) -> FilterRul
         raise ConfigurationError(f"Rule at index {idx} must be a dictionary")
 
     action = r.get("action")
-    if action not in ("allow", "deny"):
+    if action not in ("forward", "drop"):
         raise ConfigurationError(
-            f"Rule {idx} missing or invalid 'action' (must be 'allow' or 'deny')"
+            f"Rule {idx} missing or invalid 'action' (must be 'forward' or 'drop')"
         )
 
     src = r.get("src", "*")
@@ -188,9 +188,9 @@ def _parse_rule(idx: int, r: Dict[str, Any], interfaces: List[str]) -> FilterRul
             "(must be 'questions', 'answers', or 'any')"
         ) from e
 
-    is_allow = action == "allow"
+    is_forward = action == "forward"
     return FilterRule(
-        action=is_allow,
+        action=is_forward,
         services=services,
         hosts=hosts,
         src=src,
@@ -224,8 +224,8 @@ def load_config(config_path: str) -> AppConfig:
 
     # Validate default action
     default_action = raw_data.get("default_action")
-    if default_action not in ("allow", "deny"):
-        raise ConfigurationError("'default_action' must be either 'allow' or 'deny'")
+    if default_action not in ("forward", "drop"):
+        raise ConfigurationError("'default_action' must be either 'forward' or 'drop'")
 
     # Validate and parse rules
     raw_rules = raw_data.get("rules", [])

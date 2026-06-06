@@ -60,11 +60,11 @@ interfaces:
   - eth0   # Trusted LAN
   - wlan0  # IoT Wi-Fi
 
-default_action: deny
+default_action: drop
 
 rules:
-  # Allow Trusted devices to cast to IoT Chromecast
-  - action: allow
+  # Forward Trusted devices casting to IoT Chromecast
+  - action: forward
     services:
       - "_googlecast._tcp.local"
     src: "*"
@@ -76,5 +76,5 @@ Since the daemon manages raw multicast sockets and binds to protected port `5353
 ```bash
 sudo .venv/bin/mdns-sieve --config config.yaml -vv
 ```
-* Use `-v` to log denied/blocked packets.
-* Use `-vv` to log both denied packets and successfully forwarded packets.
+* Use `-v` to log dropped packets.
+* Use `-vv` to log both dropped packets and successfully forwarded packets.

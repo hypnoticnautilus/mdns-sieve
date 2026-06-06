@@ -8,26 +8,26 @@ interfaces:
   - wlan0
 
 # Default action if a packet does not match any of the rules below
-default_action: deny
+default_action: drop
 
 # Filtering rules evaluated in order (first match wins)
 rules:
-  # 1. Block Spotify Connect advertisements from eth1 going to wlan0
-  - action: deny
+  # 1. Drop Spotify Connect advertisements from eth1 going to wlan0
+  - action: drop
     services:
       - "_spotify-connect._tcp.local"
     src: eth1
     dst: wlan0
 
-  # 2. Allow Google Cast (Chromecast, Google Home) across all subnets
-  - action: allow
+  # 2. Forward Google Cast (Chromecast, Google Home) across all subnets
+  - action: forward
     services:
       - "_googlecast._tcp.local"
     src: "*"
     dst: "*"
 
-  # 3. Allow reflection of a specific Apple TV's records from eth0 to eth1
-  - action: allow
+  # 3. Forward reflection of a specific Apple TV's records from eth0 to eth1
+  - action: forward
     hosts:
       - "appletv.local"
     src: eth0
