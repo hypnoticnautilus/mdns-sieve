@@ -21,7 +21,7 @@ except ImportError:
     fcntl = None  # type: ignore
 
 from mdns_sieve.config import AppConfig
-from mdns_sieve.mdns_parser import parse_mdns_packet, MdnsParsingError
+from mdns_sieve.mdns_parser import parse_mdns_packet, MdnsParsingError, DNSPacket
 
 logger = logging.getLogger("mdns_sieve.reflector")
 
@@ -147,7 +147,7 @@ class MdnsReflector:
         self.offline_interfaces.add(ifname)
         logger.error("Interface %s marked OFFLINE. Reconnection scheduled.", ifname)
 
-    # pylint: disable=too-many-branches
+    # pylint: disable=too-many-branches,too-many-locals,too-many-statements
     def handle_packet(self, src_interface: str, data: bytes) -> None:
         """Parses a packet, evaluates filtering rules, and replicates to forwarded interfaces."""
         try:
@@ -167,48 +167,141 @@ class MdnsReflector:
             if dst_interface == src_interface:
                 continue
 
-            if self.config.should_forward(src_interface, dst_interface, q_names, a_names):
-                logger.debug(
-                    "Forwarding mDNS packet (%d bytes) from %s -> %s for names: %s",
-                    len(data),
-                    src_interface,
-                    dst_interface,
-                    names_desc,
-                )
-                try:
-                    sock.sendto(data, ("224.0.0.251", 5353))
-                except OSError as e:
-                    # Log failure. If it is a bad socket descriptor, mark interface offline.
-                    logger.error("Transmit failed on %s: %s", dst_interface, str(e))
-                    if e.errno in (errno.EBADF, errno.ENETDOWN, errno.ENETUNREACH):
-                        self.mark_interface_offline(dst_interface)
-            else:
-                is_mixed = False
-                if q_names and a_names:
-                    q_forward = self.config.should_forward(
-                        src_interface, dst_interface, q_names, set()
-                    )
-                    a_forward = self.config.should_forward(
-                        src_interface, dst_interface, set(), a_names
-                    )
-                    if q_forward != a_forward:
-                        is_mixed = True
+            if self.config.rewrite_mixed_packets:
+                filtered_questions = [
+                    q
+                    for q in packet.questions
+                    if self.config.should_forward_question(src_interface, dst_interface, q.name)
+                ]
+                filtered_answers = [
+                    rr
+                    for rr in packet.answers
+                    if self.config.should_forward_record(src_interface, dst_interface, rr)
+                ]
+                filtered_authorities = [
+                    rr
+                    for rr in packet.authorities
+                    if self.config.should_forward_record(src_interface, dst_interface, rr)
+                ]
+                filtered_additionals = [
+                    rr
+                    for rr in packet.additionals
+                    if self.config.should_forward_record(src_interface, dst_interface, rr)
+                ]
 
-                if is_mixed:
-                    logger.info(
-                        "Dropped mDNS packet from %s -> %s containing a mixture "
-                        "of forwarded/dropped questions and answers. Names: %s",
-                        src_interface,
-                        dst_interface,
-                        names_desc,
-                    )
-                else:
+                kept_q = len(filtered_questions)
+                kept_a = (
+                    len(filtered_answers) + len(filtered_authorities) + len(filtered_additionals)
+                )
+                total_orig_q = len(packet.questions)
+                total_orig_a = (
+                    len(packet.answers) + len(packet.authorities) + len(packet.additionals)
+                )
+
+                stripped_q = total_orig_q - kept_q
+                stripped_a = total_orig_a - kept_a
+
+                if kept_q == 0 and kept_a == 0:
                     logger.debug(
                         "Dropped mDNS packet from %s -> %s for names: %s",
                         src_interface,
                         dst_interface,
                         names_desc,
                     )
+                elif stripped_q == 0 and stripped_a == 0:
+                    logger.debug(
+                        "Forwarding mDNS packet (%d bytes) from %s -> %s for names: %s",
+                        len(data),
+                        src_interface,
+                        dst_interface,
+                        names_desc,
+                    )
+                    try:
+                        sock.sendto(data, ("224.0.0.251", 5353))
+                    except OSError as e:
+                        logger.error("Transmit failed on %s: %s", dst_interface, str(e))
+                        if e.errno in (errno.EBADF, errno.ENETDOWN, errno.ENETUNREACH):
+                            self.mark_interface_offline(dst_interface)
+                else:
+                    rewritten_packet = DNSPacket(
+                        transaction_id=packet.transaction_id,
+                        flags=packet.flags,
+                        questions=filtered_questions,
+                        answers=filtered_answers,
+                        authorities=filtered_authorities,
+                        additionals=filtered_additionals,
+                    )
+                    try:
+                        serialized_data = rewritten_packet.serialize()
+                    except Exception as e:  # pylint: disable=broad-exception-caught
+                        logger.error(
+                            "Failed to serialize rewritten packet from %s -> %s: %s",
+                            src_interface,
+                            dst_interface,
+                            str(e),
+                        )
+                        continue
+
+                    logger.debug(
+                        "Forwarding rewritten mDNS packet (%d B, orig %d B) from %s -> %s. "
+                        "Kept %d Qs, %d RRs; stripped %d Qs, %d RRs.",
+                        len(serialized_data),
+                        len(data),
+                        src_interface,
+                        dst_interface,
+                        kept_q,
+                        kept_a,
+                        stripped_q,
+                        stripped_a,
+                    )
+                    try:
+                        sock.sendto(serialized_data, ("224.0.0.251", 5353))
+                    except OSError as e:
+                        logger.error("Transmit failed on %s: %s", dst_interface, str(e))
+                        if e.errno in (errno.EBADF, errno.ENETDOWN, errno.ENETUNREACH):
+                            self.mark_interface_offline(dst_interface)
+            else:
+                if self.config.should_forward(src_interface, dst_interface, q_names, a_names):
+                    logger.debug(
+                        "Forwarding mDNS packet (%d bytes) from %s -> %s for names: %s",
+                        len(data),
+                        src_interface,
+                        dst_interface,
+                        names_desc,
+                    )
+                    try:
+                        sock.sendto(data, ("224.0.0.251", 5353))
+                    except OSError as e:
+                        logger.error("Transmit failed on %s: %s", dst_interface, str(e))
+                        if e.errno in (errno.EBADF, errno.ENETDOWN, errno.ENETUNREACH):
+                            self.mark_interface_offline(dst_interface)
+                else:
+                    is_mixed = False
+                    if q_names and a_names:
+                        q_forward = self.config.should_forward(
+                            src_interface, dst_interface, q_names, set()
+                        )
+                        a_forward = self.config.should_forward(
+                            src_interface, dst_interface, set(), a_names
+                        )
+                        if q_forward != a_forward:
+                            is_mixed = True
+
+                    if is_mixed:
+                        logger.info(
+                            "Dropped mDNS packet from %s -> %s containing a mixture "
+                            "of forwarded/dropped questions and answers. Names: %s",
+                            src_interface,
+                            dst_interface,
+                            names_desc,
+                        )
+                    else:
+                        logger.debug(
+                            "Dropped mDNS packet from %s -> %s for names: %s",
+                            src_interface,
+                            dst_interface,
+                            names_desc,
+                        )
 
     # pylint: disable=too-many-branches
     def run(self) -> None:

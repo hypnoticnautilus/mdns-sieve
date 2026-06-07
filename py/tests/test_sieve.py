@@ -18,6 +18,7 @@ from mdns_sieve.mdns_parser import (
     DNSPacket,
     DNSQuestion,
     DNSResourceRecord,
+    write_name,
 )
 from mdns_sieve.reflector import MdnsReflector
 
@@ -529,6 +530,176 @@ rules:
             for msg in called_info_messages
         )
         self.assertTrue(any_warning, f"Info log not found: {called_info_messages}")
+
+
+class TestPacketRewriting(unittest.TestCase):
+    """Verifies config, serialization, and end-to-end routing with packet rewriting/filtering."""
+
+    def test_config_rewriting_flag(self) -> None:
+        """Verifies parsing of the 'rewrite_mixed_packets' configuration option."""
+        # 1. Parsing when enabled
+        yaml_enabled = """
+interfaces: [eth0, eth1]
+default_action: drop
+rewrite_mixed_packets: true
+rules: []
+"""
+        with patch("builtins.open", return_value=io.StringIO(yaml_enabled)):
+            config = load_config("dummy.yaml")
+            self.assertTrue(config.rewrite_mixed_packets)
+
+        # 2. Parsing when disabled/omitted
+        yaml_disabled = """
+interfaces: [eth0, eth1]
+default_action: drop
+rules: []
+"""
+        with patch("builtins.open", return_value=io.StringIO(yaml_disabled)):
+            config = load_config("dummy.yaml")
+            self.assertFalse(config.rewrite_mixed_packets)
+
+        # 3. Validation error on non-boolean
+        yaml_invalid = """
+interfaces: [eth0, eth1]
+default_action: drop
+rewrite_mixed_packets: "not-a-boolean"
+rules: []
+"""
+        with patch("builtins.open", return_value=io.StringIO(yaml_invalid)):
+            with self.assertRaises(ConfigurationError):
+                load_config("dummy.yaml")
+
+    def test_write_name(self) -> None:
+        """Verifies DNS name serialization and full-name compression."""
+        compression_dict: dict[str, int] = {}
+
+        # Write first name at offset 12
+        name1 = "googlecast.local"
+        b1 = write_name(name1, compression_dict, 12)
+        # Expected encoding: \x0a googlecast \x05 local \x00
+        expected1 = b"\x0agooglecast\x05local\x00"
+        self.assertEqual(b1, expected1)
+        self.assertEqual(compression_dict["googlecast.local"], 12)
+
+        # Write same name again, should return 2-byte pointer 0xC00C (0xC000 | 12)
+        b2 = write_name(name1, compression_dict, len(b1) + 12)
+        self.assertEqual(b2, b"\xc0\x0c")
+
+        # Write empty name
+        self.assertEqual(write_name("", compression_dict, 0), b"\x00")
+
+    def test_packet_serialization(self) -> None:
+        """Verifies DNSPacket.serialize matches the original decoded packet structure."""
+        # Let's construct a binary packet with Questions, Answers, PTR, SRV
+        # Header: transaction_id=1, flags=0, qd=1, an=2, ns=0, ar=0
+        header = struct.pack("!HHHHHH", 1, 0, 1, 2, 0, 0)
+        # Question: _services._dns-sd._udp.local (PTR query)
+        qname = b"\x09_services\x07_dns-sd\x04_udp\x05local\x00"
+        question = qname + struct.pack("!HH", 12, 1)
+
+        # Answer 1: PTR type 12 targetting appletv.local (uncompressed target name)
+        # Name: _services._dns-sd._udp.local (compresses to question name pointer: 12)
+        rr1_name = b"\xc0\x0c"
+        rr1_meta = struct.pack("!HHIH", 12, 1, 120, 15)  # rdlen = 15
+        rr1_rdata = b"\x07appletv\x05local\x00"
+
+        # Answer 2: SRV type 33 targetting target.local
+        rr2_name = b"\x07appletv\x05local\x00"
+        # SRV RDATA: priority=1, weight=2, port=5000, target=target.local (14 bytes)
+        rr2_rdata = struct.pack("!HHH", 1, 2, 5000) + b"\x06target\x05local\x00"
+        rr2_meta = struct.pack("!HHIH", 33, 1, 120, len(rr2_rdata))
+
+        packet_bytes = (
+            header + question + rr1_name + rr1_meta + rr1_rdata + rr2_name + rr2_meta + rr2_rdata
+        )
+
+        # Parse it
+        parsed = parse_mdns_packet(packet_bytes)
+        self.assertEqual(parsed.transaction_id, 1)
+        self.assertEqual(len(parsed.questions), 1)
+        self.assertEqual(len(parsed.answers), 2)
+
+        # Re-serialize it
+        serialized = parsed.serialize()
+
+        # Re-parse the serialized bytes to make sure it matches identically
+        re_parsed = parse_mdns_packet(serialized)
+        self.assertEqual(re_parsed.transaction_id, parsed.transaction_id)
+        self.assertEqual(re_parsed.flags, parsed.flags)
+        self.assertEqual(len(re_parsed.questions), len(parsed.questions))
+        self.assertEqual(re_parsed.questions[0].name, parsed.questions[0].name)
+        self.assertEqual(len(re_parsed.answers), len(parsed.answers))
+        self.assertEqual(re_parsed.answers[0].name, parsed.answers[0].name)
+        self.assertEqual(re_parsed.answers[0].target_name, parsed.answers[0].target_name)
+        self.assertEqual(re_parsed.answers[1].name, parsed.answers[1].name)
+        self.assertEqual(re_parsed.answers[1].target_name, parsed.answers[1].target_name)
+
+    @patch("select.select")
+    @patch("mdns_sieve.reflector.logger")
+    def test_filtered_forwarding_rewriting(
+        self, mock_logger: MagicMock, _mock_select: MagicMock
+    ) -> None:
+        """Verifies that mixed packets are rewritten and forwarded with dropped records stripped."""
+        # Rules:
+        # - Forward Questions: eth0 -> eth1
+        # - Drop Answers: eth0 -> eth1 (default action or explicit drop)
+        rules = [
+            FilterRule(
+                action=True,
+                services=["*"],
+                src="eth0",
+                dst="eth1",
+                section=RuleSection.QUESTIONS,
+            ),
+            FilterRule(
+                action=False, services=["*"], src="eth0", dst="eth1", section=RuleSection.ANSWERS
+            ),
+        ]
+        config = AppConfig(
+            interfaces=["eth0", "eth1"],
+            default_action="drop",
+            rewrite_mixed_packets=True,
+            rules=rules,
+        )
+        reflector = MdnsReflector(config)
+
+        mock_sock_eth1 = MagicMock()
+        reflector.sockets = {"eth0": MagicMock(), "eth1": mock_sock_eth1}
+        reflector.interface_ips = {"eth0": "192.168.1.1", "eth1": "192.168.2.1"}
+
+        # Construct a packet with 1 Question (allowed) and 1 Answer (dropped)
+        mixed_packet = (
+            struct.pack("!HHHHHH", 42, 0, 1, 1, 0, 0)
+            + b"\x05local\x00"
+            + struct.pack("!HH", 12, 1)
+            + b"\x05local\x00"
+            + struct.pack("!HHIH", 12, 1, 120, 0)
+        )
+
+        # Process packet
+        reflector.handle_packet("eth0", mixed_packet)
+
+        # Re-serialized packet is transmitted on eth1
+        mock_sock_eth1.sendto.assert_called_once()
+        self.assertEqual(mock_sock_eth1.sendto.call_args[0][1], ("224.0.0.251", 5353))
+
+        # The sent packet should only have 1 question and 0 answers
+        sent_packet = parse_mdns_packet(mock_sock_eth1.sendto.call_args[0][0])
+        self.assertEqual(sent_packet.transaction_id, 42)
+        self.assertEqual(len(sent_packet.questions), 1)
+        self.assertEqual(len(sent_packet.answers), 0)
+        self.assertEqual(sent_packet.questions[0].name, "local")
+
+        # Verify it logs at debug level
+        called_debug_messages = [
+            call[0][0] % call[0][1:] for call in mock_logger.debug.call_args_list
+        ]
+        any_rewrite_log = any(
+            "Forwarding rewritten mDNS packet" in msg
+            and "Kept 1 Qs, 0 RRs; stripped 0 Qs, 1 RRs." in msg
+            for msg in called_debug_messages
+        )
+        self.assertTrue(any_rewrite_log, f"Debug log not found: {called_debug_messages}")
 
 
 if __name__ == "__main__":

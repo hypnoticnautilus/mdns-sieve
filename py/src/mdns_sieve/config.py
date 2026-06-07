@@ -98,6 +98,7 @@ class AppConfig:
 
     interfaces: List[str]
     default_action: str  # "forward" or "drop"
+    rewrite_mixed_packets: bool = False
     rules: List[FilterRule] = field(default_factory=list)
 
     def should_forward(
@@ -125,6 +126,31 @@ class AppConfig:
                 if rule.matches_packet(q_names, a_names):
                     return rule.action
 
+        return self.default_action == "forward"
+
+    def should_forward_question(self, src_interface: str, dst_interface: str, name: str) -> bool:
+        """Determines if a single question name should be forwarded."""
+        for rule in self.rules:
+            if rule.applies_to(src_interface, dst_interface):
+                if rule.matches_packet({name}, set()):
+                    return rule.action
+        return self.default_action == "forward"
+
+    def should_forward_record(
+        self,
+        src_interface: str,
+        dst_interface: str,
+        rr: Any,  # Avoid circular import issues or keep it generic
+    ) -> bool:
+        """Determines if a single resource record should be forwarded."""
+        names = {rr.name}
+        if rr.target_name:
+            names.add(rr.target_name)
+
+        for rule in self.rules:
+            if rule.applies_to(src_interface, dst_interface):
+                if rule.matches_packet(set(), names):
+                    return rule.action
         return self.default_action == "forward"
 
 
@@ -227,6 +253,11 @@ def load_config(config_path: str) -> AppConfig:
     if default_action not in ("forward", "drop"):
         raise ConfigurationError("'default_action' must be either 'forward' or 'drop'")
 
+    # Validate rewrite_mixed_packets
+    rewrite_mixed_packets = raw_data.get("rewrite_mixed_packets", False)
+    if not isinstance(rewrite_mixed_packets, bool):
+        raise ConfigurationError("'rewrite_mixed_packets' must be a boolean")
+
     # Validate and parse rules
     raw_rules = raw_data.get("rules", [])
     if not isinstance(raw_rules, list):
@@ -236,4 +267,9 @@ def load_config(config_path: str) -> AppConfig:
     for idx, r in enumerate(raw_rules):
         rules.append(_parse_rule(idx, r, interfaces))
 
-    return AppConfig(interfaces=interfaces, default_action=default_action, rules=rules)
+    return AppConfig(
+        interfaces=interfaces,
+        default_action=default_action,
+        rewrite_mixed_packets=rewrite_mixed_packets,
+        rules=rules,
+    )

@@ -7,7 +7,7 @@ with support for label compression traversal and strict bounds checks.
 
 from dataclasses import dataclass, field
 import struct
-from typing import Set, Tuple, List, Optional
+from typing import Set, Tuple, List, Optional, Dict
 
 
 class MdnsParsingError(ValueError):
@@ -79,6 +79,106 @@ class DNSPacket:
                     names.add(rr.target_name)
             self._extracted_answer_names = names
         return self._extracted_answer_names
+
+    def serialize(self) -> bytes:
+        """
+        Serializes the DNSPacket back into a binary DNS/mDNS payload.
+        Implements full-name compression for all questions and resource records.
+        """
+        qdcount = len(self.questions)
+        ancount = len(self.answers)
+        nscount = len(self.authorities)
+        arcount = len(self.additionals)
+
+        buffer = bytearray(
+            struct.pack(
+                "!HHHHHH",
+                self.transaction_id,
+                self.flags,
+                qdcount,
+                ancount,
+                nscount,
+                arcount,
+            )
+        )
+        compression_dict: Dict[str, int] = {}
+
+        # 1. Questions
+        for q in self.questions:
+            qname_bytes = write_name(q.name, compression_dict, len(buffer))
+            buffer.extend(qname_bytes)
+            buffer.extend(struct.pack("!HH", q.qtype, q.qclass))
+
+        # Helper to serialize a list of resource records
+        def serialize_rr_list(rrs: List[DNSResourceRecord]) -> None:
+            for rr in rrs:
+                # Name
+                name_bytes = write_name(rr.name, compression_dict, len(buffer))
+                buffer.extend(name_bytes)
+                # Type, Class, TTL
+                buffer.extend(struct.pack("!HHI", rr.rtype, rr.rclass, rr.ttl))
+
+                # Reserve 2 bytes for RDlen, then append serialized data, then patch
+                rdlen_offset = len(buffer)
+                buffer.extend(b"\x00\x00")
+
+                start_rdata = len(buffer)
+
+                if rr.rtype == 12 and rr.target_name:  # PTR
+                    target_bytes = write_name(rr.target_name, compression_dict, len(buffer))
+                    buffer.extend(target_bytes)
+                elif rr.rtype == 33 and rr.target_name:  # SRV
+                    priority = 0
+                    weight = 0
+                    port = 0
+                    if len(rr.rdata) >= 6:
+                        priority, weight, port = struct.unpack("!HHH", rr.rdata[:6])
+
+                    buffer.extend(struct.pack("!HHH", priority, weight, port))
+                    target_bytes = write_name(rr.target_name, compression_dict, len(buffer))
+                    buffer.extend(target_bytes)
+                else:
+                    buffer.extend(rr.rdata)
+
+                # Patch the RDlen field
+                rdlen = len(buffer) - start_rdata
+                struct.pack_into("!H", buffer, rdlen_offset, rdlen)
+
+        # 2. Answers
+        serialize_rr_list(self.answers)
+        # 3. Authorities
+        serialize_rr_list(self.authorities)
+        # 4. Additionals
+        serialize_rr_list(self.additionals)
+
+        return bytes(buffer)
+
+
+def write_name(name: str, compression_dict: Dict[str, int], current_offset: int) -> bytes:
+    """
+    Serializes a domain name string into DNS label format.
+    Implements full-name compression by referencing compression_dict.
+    """
+    canon_name = name.rstrip(".").lower()
+    if not canon_name:
+        return b"\x00"
+
+    if canon_name in compression_dict:
+        offset = compression_dict[canon_name]
+        return struct.pack("!H", 0xC000 | offset)
+
+    compression_dict[canon_name] = current_offset
+
+    parts = name.rstrip(".").split(".")
+    out = bytearray()
+    for part in parts:
+        part_bytes = part.encode("utf-8")
+        if len(part_bytes) > 63:
+            raise ValueError("DNS label too long")
+        out.append(len(part_bytes))
+        out.extend(part_bytes)
+    out.append(0)
+    return bytes(out)
 
 
 def _resolve_pointer(data: bytes, offset: int, len_byte: int, visited: Set[int]) -> str:
