@@ -1,0 +1,55 @@
+# mdns-sieve Configuration File
+# Modern, fine-grained, secure mDNS routing config
+
+# Physical interfaces to bind and listen on
+interfaces:
+  - eth0
+  - eth1
+  - wlan0
+
+# Default action if a packet does not match any of the rules below
+default_action: drop
+
+# Granular packet rewriting (Optional)
+# If true, packets containing a mixture of forwarded and dropped records
+# will be dynamically rewritten to strip the disallowed records and keep the allowed ones.
+# If false (default), the entire packet is dropped if any record in it is disallowed.
+rewrite_mixed_packets: false
+
+# Command server for querying statistics and managing daemon state (Optional)
+# Enabling this activates a non-blocking TCP socket to retrieve traffic stats.
+# The web GUI client connects to this port to retrieve analytics data.
+command_server:
+  enabled: true
+  host: "127.0.0.1"
+  port: 5354
+
+# GUI web server for monitoring and managing mDNS Sieve (Optional)
+# Specify the host and port for HTTP clients to connect to the GUI dashboard.
+# The GUI will also connect to the command_server above.
+gui_server:
+  host: "0.0.0.0"
+  port: 8080
+
+# Filtering rules evaluated in order (first match wins)
+rules:
+  # 1. Drop Spotify Connect advertisements from eth1 going to wlan0
+  - action: drop
+    services:
+      - "_spotify-connect._tcp.local"
+    src: eth1
+    dst: wlan0
+
+  # 2. Forward Google Cast (Chromecast, Google Home) across all subnets
+  - action: forward
+    services:
+      - "_googlecast._tcp.local"
+    src: "*"
+    dst: "*"
+
+  # 3. Forward reflection of a specific Apple TV's records from eth0 to eth1
+  - action: forward
+    hosts:
+      - "appletv.local"
+    src: eth0
+    dst: eth1

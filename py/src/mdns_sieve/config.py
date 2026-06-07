@@ -93,12 +93,22 @@ class FilterRule:
 
 
 @dataclass
+class CommandServerConfig:
+    """Represents the configuration for the TCP command/statistics server."""
+
+    enabled: bool
+    host: str
+    port: int
+
+
+@dataclass
 class AppConfig:
     """Represents the global application configuration."""
 
     interfaces: List[str]
     default_action: str  # "forward" or "drop"
     rewrite_mixed_packets: bool = False
+    command_server: Optional[CommandServerConfig] = None
     rules: List[FilterRule] = field(default_factory=list)
 
     def should_forward(
@@ -258,6 +268,23 @@ def load_config(config_path: str) -> AppConfig:
     if not isinstance(rewrite_mixed_packets, bool):
         raise ConfigurationError("'rewrite_mixed_packets' must be a boolean")
 
+    # Validate command_server
+    command_server = None
+    raw_server = raw_data.get("command_server")
+    if raw_server is not None:
+        if not isinstance(raw_server, dict):
+            raise ConfigurationError("'command_server' must be a dictionary")
+        enabled = raw_server.get("enabled")
+        if not isinstance(enabled, bool):
+            raise ConfigurationError("'command_server.enabled' must be a boolean")
+        host = raw_server.get("host")
+        if not isinstance(host, str):
+            raise ConfigurationError("'command_server.host' must be a string")
+        port = raw_server.get("port")
+        if not isinstance(port, int) or not 1 <= port <= 65535:
+            raise ConfigurationError("'command_server.port' must be an integer between 1 and 65535")
+        command_server = CommandServerConfig(enabled=enabled, host=host, port=port)
+
     # Validate and parse rules
     raw_rules = raw_data.get("rules", [])
     if not isinstance(raw_rules, list):
@@ -271,5 +298,6 @@ def load_config(config_path: str) -> AppConfig:
         interfaces=interfaces,
         default_action=default_action,
         rewrite_mixed_packets=rewrite_mixed_packets,
+        command_server=command_server,
         rules=rules,
     )

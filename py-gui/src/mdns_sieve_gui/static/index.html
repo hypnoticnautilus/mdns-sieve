@@ -1,0 +1,279 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>mDNS Sieve Dashboard</title>
+  <!-- Google Fonts - Inter -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+  <!-- Lucide Icons -->
+  <script src="https://unpkg.com/lucide@latest"></script>
+  <!-- Chart.js -->
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <!-- Local Stylesheet -->
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <!-- Offline Banner Overlay -->
+  <div id="offlineOverlay" class="overlay hidden">
+    <div class="overlay-card">
+      <i data-lucide="wifi-off" class="icon-large warning"></i>
+      <h2>mDNS Sieve Daemon Offline</h2>
+      <p>Could not connect to the filtering reflector daemon. Retrying connection...</p>
+      <div id="offlineDetails" class="details-box"></div>
+      <button onclick="refreshData()" class="btn btn-primary">Retry Now</button>
+    </div>
+  </div>
+
+  <!-- Main Container -->
+  <div class="container">
+    <!-- Header -->
+    <header class="main-header">
+      <div class="branding">
+        <div class="logo-box">
+          <i data-lucide="filter" class="logo-icon"></i>
+        </div>
+        <div>
+          <h1>mDNS Sieve</h1>
+          <p class="subtitle">Filtering mDNS Reflector</p>
+        </div>
+      </div>
+
+      <div class="header-actions">
+        <!-- Theme Selector -->
+        <div class="theme-picker">
+          <button id="themeToggleBtn" class="btn btn-icon" title="Switch Theme">
+            <i id="themeIcon" data-lucide="sun"></i>
+          </button>
+          <div id="themeMenu" class="dropdown-menu hidden">
+            <button onclick="setTheme('light')" class="dropdown-item"><i data-lucide="sun"></i> Light</button>
+            <button onclick="setTheme('dark')" class="dropdown-item"><i data-lucide="moon"></i> Dark</button>
+            <button onclick="setTheme('system')" class="dropdown-item"><i data-lucide="laptop"></i> System</button>
+          </div>
+        </div>
+
+        <!-- Auto-Refresh Control -->
+        <div class="refresh-control">
+          <label class="switch">
+            <input type="checkbox" id="autoRefreshToggle" checked>
+            <span class="slider round"></span>
+          </label>
+          <span class="refresh-label">Auto-Refresh</span>
+        </div>
+
+        <!-- Refresh Now Button -->
+        <button id="refreshBtn" onclick="refreshData()" class="btn btn-secondary" title="Refresh Now">
+          <i data-lucide="refresh-cw"></i>
+          <span>Refresh</span>
+        </button>
+
+        <!-- Clear Stats Button -->
+        <button id="clearBtn" onclick="confirmClearStats()" class="btn btn-danger" title="Clear All Statistics">
+          <i data-lucide="trash-2"></i>
+          <span>Clear Stats</span>
+        </button>
+
+        <!-- Info / Help Icon -->
+        <button onclick="toggleModal('infoModal', true)" class="btn btn-icon" title="About & Daemon Info">
+          <i data-lucide="info"></i>
+        </button>
+
+        <!-- Settings Icon -->
+        <button onclick="toggleModal('settingsModal', true)" class="btn btn-icon" title="Dashboard Settings">
+          <i data-lucide="settings"></i>
+        </button>
+      </div>
+    </header>
+
+    <!-- Main Grid Layout -->
+    <main class="dashboard-grid">
+      <!-- Row 1: Metrics Cards -->
+      <section class="metrics-row">
+        <!-- Total Requests -->
+        <div class="metric-card" id="cardTotal">
+          <div class="metric-header">
+            <span class="metric-title">Total Requests</span>
+            <div class="metric-icon-box blue"><i data-lucide="activity"></i></div>
+          </div>
+          <div class="metric-value" id="valTotal">0</div>
+          <div class="sparkline-container">
+            <canvas id="sparklineTotal" height="30"></canvas>
+          </div>
+        </div>
+
+        <!-- Forwarded Packets -->
+        <div class="metric-card" id="cardForwarded">
+          <div class="metric-header">
+            <span class="metric-title">Forwarded</span>
+            <div class="metric-icon-box green"><i data-lucide="arrow-up-right"></i></div>
+          </div>
+          <div class="metric-value" id="valForwarded">0</div>
+          <div class="sparkline-container">
+            <canvas id="sparklineForwarded" height="30"></canvas>
+          </div>
+        </div>
+
+        <!-- Dropped Packets -->
+        <div class="metric-card" id="cardDropped">
+          <div class="metric-header">
+            <span class="metric-title">Dropped</span>
+            <div class="metric-icon-box red"><i data-lucide="ban"></i></div>
+          </div>
+          <div class="metric-value" id="valDropped">0</div>
+          <div class="sparkline-container">
+            <canvas id="sparklineDropped" height="30"></canvas>
+          </div>
+        </div>
+
+        <!-- Rewritten Packets -->
+        <div class="metric-card" id="cardRewritten">
+          <div class="metric-header">
+            <span class="metric-title">Rewritten</span>
+            <div class="metric-icon-box purple"><i data-lucide="shuffle"></i></div>
+          </div>
+          <div class="metric-value" id="valRewritten">0</div>
+          <div class="sparkline-container">
+            <canvas id="sparklineRewritten" height="30"></canvas>
+          </div>
+        </div>
+      </section>
+
+      <!-- Row 2: Traffic Chart -->
+      <section class="chart-section dashboard-card">
+        <div class="card-header">
+          <h2>Network Traffic Trends (Real-Time)</h2>
+          <span class="card-subtitle">Rates updated based on polling window</span>
+        </div>
+        <div class="chart-container">
+          <canvas id="metricsChart"></canvas>
+        </div>
+      </section>
+
+      <!-- Row 3: Splits into Active Hosts (Left) and Queried Domains (Right) -->
+      <div class="split-row">
+        <!-- Active Hosts Panel -->
+        <section class="hosts-section dashboard-card">
+          <div class="card-header">
+            <h2>Active Hosts</h2>
+            <span class="card-subtitle">Source devices seen transmitting mDNS traffic across reflector interfaces.</span>
+          </div>
+          <div class="table-container">
+            <table class="hosts-table">
+              <thead>
+                <tr>
+                  <th>IP Address</th>
+                  <th>Interface</th>
+                  <th>Packets</th>
+                  <th>Status</th>
+                  <th>Last Active</th>
+                </tr>
+              </thead>
+              <tbody id="hostsTableBody">
+                <tr>
+                  <td colspan="5" class="table-empty">No active hosts discovered.</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </section>
+
+        <!-- Queried Domains Panel -->
+        <section class="domains-section dashboard-card">
+          <div class="card-header">
+            <h2>Queried Domains Explorer</h2>
+            <span class="card-subtitle">Discovery queries and responses matching rule criteria.</span>
+            <div class="search-box">
+              <i data-lucide="search" class="search-icon"></i>
+              <input type="text" id="domainSearch" placeholder="Filter domain names..." oninput="filterDomains()">
+            </div>
+          </div>
+
+          <div class="tabs">
+            <button id="tabAllowed" class="tab-btn active" onclick="switchDomainTab('allowed')">
+              Allowed <span class="badge" id="badgeAllowed">0</span>
+            </button>
+            <button id="tabDisallowed" class="tab-btn" onclick="switchDomainTab('disallowed')">
+              Disallowed <span class="badge danger" id="badgeDisallowed">0</span>
+            </button>
+          </div>
+
+          <div class="domain-list-container">
+            <div id="domainList" class="domain-list">
+              <div class="list-empty">No domain statistics collected yet.</div>
+            </div>
+          </div>
+        </section>
+      </div>
+    </main>
+  </div>
+
+  <!-- Info Modal -->
+  <div id="infoModal" class="modal-overlay hidden">
+    <div class="modal-card">
+      <div class="modal-header">
+        <h2>About mDNS Sieve</h2>
+        <button onclick="toggleModal('infoModal', false)" class="btn btn-icon"><i data-lucide="x"></i></button>
+      </div>
+      <div class="modal-body">
+        <p><strong>mDNS Sieve GUI</strong> connects to the backend reflector to provide visual packet counters and traffic inspection dashboard.</p>
+        
+        <h3>Daemon Connection</h3>
+        <table class="info-table">
+          <tr>
+            <td><strong>Host Address</strong></td>
+            <td id="infoDaemonHost">-</td>
+          </tr>
+          <tr>
+            <td><strong>TCP Control Port</strong></td>
+            <td id="infoDaemonPort">-</td>
+          </tr>
+          <tr>
+            <td><strong>API Health Status</strong></td>
+            <td><span id="infoDaemonStatus" class="status-indicator">Checking...</span></td>
+          </tr>
+        </table>
+
+        <h3>Active Hosts Panel Purpose</h3>
+        <p>The "Active Hosts" panel maps out which source IP addresses are transmitting traffic on local network interfaces. It allows network administrators to see active devices, verify interface routing layout, and spot idle states.</p>
+
+        <h3>Top-Right Icon Controls</h3>
+        <p>The settings gear icon allows adjusting chart buffers and poll schedules locally. The info button exposes current connection profiles and debug diagnostics.</p>
+      </div>
+      <div class="modal-footer">
+        <button onclick="toggleModal('infoModal', false)" class="btn btn-primary">Close</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Settings Modal -->
+  <div id="settingsModal" class="modal-overlay hidden">
+    <div class="modal-card">
+      <div class="modal-header">
+        <h2>Dashboard Settings</h2>
+        <button onclick="toggleModal('settingsModal', false)" class="btn btn-icon"><i data-lucide="x"></i></button>
+      </div>
+      <div class="modal-body">
+        <div class="form-group">
+          <label for="setRefreshInterval">Poll Rate (seconds)</label>
+          <input type="number" id="setRefreshInterval" min="1" max="60" value="8">
+          <p class="help-text">How often the dashboard requests metrics from the HTTP proxy.</p>
+        </div>
+        <div class="form-group">
+          <label for="setChartWindow">Chart Display Window (data points)</label>
+          <input type="number" id="setChartWindow" min="10" max="100" value="30">
+          <p class="help-text">The number of historical rate samples shown on the line graph.</p>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button onclick="toggleModal('settingsModal', false)" class="btn btn-secondary">Cancel</button>
+        <button onclick="saveSettings()" class="btn btn-primary">Save Settings</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Scripts -->
+  <script src="/app.js"></script>
+</body>
+</html>

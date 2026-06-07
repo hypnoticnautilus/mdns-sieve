@@ -218,5 +218,5 @@ __marimo__/
 .streamlit/secrets.toml
 
 # Local configuration files
-py/config.yaml
+config.yaml
 

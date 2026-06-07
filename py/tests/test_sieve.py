@@ -6,12 +6,20 @@ with recursion protection, and mock-based network socket reflection behavior.
 """
 
 import io
+import json
 import socket
 import struct
 import unittest
 from unittest.mock import MagicMock, patch
 
-from mdns_sieve.config import load_config, ConfigurationError, AppConfig, FilterRule, RuleSection
+from mdns_sieve.config import (
+    load_config,
+    ConfigurationError,
+    AppConfig,
+    FilterRule,
+    RuleSection,
+    CommandServerConfig,
+)
 from mdns_sieve.mdns_parser import (
     parse_mdns_packet,
     MdnsParsingError,
@@ -700,6 +708,162 @@ rules: []
             for msg in called_debug_messages
         )
         self.assertTrue(any_rewrite_log, f"Debug log not found: {called_debug_messages}")
+
+
+# pylint: disable=protected-access
+class TestCommandServer(unittest.TestCase):
+    """Verifies TCP command/statistics server parsing, collection, and integration."""
+
+    def test_config_command_server(self) -> None:
+        """Verifies parsing and validation of command_server block."""
+        # 1. Valid enabled server config
+        yaml_content = """
+interfaces: [eth0, eth1]
+default_action: drop
+command_server:
+  enabled: true
+  host: "127.0.0.1"
+  port: 5354
+rules: []
+"""
+        with patch("builtins.open", return_value=io.StringIO(yaml_content)):
+            config = load_config("dummy.yaml")
+            self.assertIsNotNone(config.command_server)
+            assert config.command_server is not None
+            self.assertTrue(config.command_server.enabled)
+            self.assertEqual(config.command_server.host, "127.0.0.1")
+            self.assertEqual(config.command_server.port, 5354)
+
+        # 2. Disabled/omitted
+        yaml_content_omitted = """
+interfaces: [eth0, eth1]
+default_action: drop
+rules: []
+"""
+        with patch("builtins.open", return_value=io.StringIO(yaml_content_omitted)):
+            config = load_config("dummy.yaml")
+            self.assertIsNone(config.command_server)
+
+        # 3. Invalid types validation error
+        yaml_invalid = """
+interfaces: [eth0]
+default_action: drop
+command_server:
+  enabled: "not-a-bool"
+  host: 123
+  port: "abc"
+rules: []
+"""
+        with patch("builtins.open", return_value=io.StringIO(yaml_invalid)):
+            with self.assertRaises(ConfigurationError):
+                load_config("dummy.yaml")
+
+    def test_stats_collection_conditional(self) -> None:
+        """Verifies stats are only collected when command server is enabled."""
+        # Case 1: Disabled
+        config_disabled = AppConfig(interfaces=["eth0", "eth1"], default_action="drop", rules=[])
+        ref_disabled = MdnsReflector(config_disabled)
+        ref_disabled.sockets = {"eth0": MagicMock(), "eth1": MagicMock()}
+        ref_disabled.interface_ips = {"eth0": "192.168.1.1", "eth1": "192.168.2.1"}
+
+        q_packet = (
+            struct.pack("!HHHHHH", 0, 0, 1, 0, 0, 0) + b"\x05local\x00" + struct.pack("!HH", 12, 1)
+        )
+        ref_disabled.handle_packet("eth0", q_packet, "192.168.1.100")
+        self.assertEqual(ref_disabled.stats_total, 0)
+
+        # Case 2: Enabled
+        config_enabled = AppConfig(
+            interfaces=["eth0", "eth1"],
+            default_action="drop",
+            command_server=CommandServerConfig(enabled=True, host="127.0.0.1", port=0),
+            rules=[],
+        )
+        ref_enabled = MdnsReflector(config_enabled)
+        ref_enabled.sockets = {"eth0": MagicMock(), "eth1": MagicMock()}
+        ref_enabled.interface_ips = {"eth0": "192.168.1.1", "eth1": "192.168.2.1"}
+
+        ref_enabled.handle_packet("eth0", q_packet, "192.168.1.100")
+        self.assertEqual(ref_enabled.stats_total, 1)
+        self.assertEqual(ref_enabled.stats_dropped, 1)
+        self.assertIn("192.168.1.100", ref_enabled.stats_hosts)
+        host_info = ref_enabled.stats_hosts["192.168.1.100"]
+        self.assertEqual(host_info["packets_sent"], 1)
+        self.assertEqual(host_info["last_interface"], "eth0")
+
+        # Verify nested names allowed and disallowed by IP
+        self.assertIn("local", ref_enabled.stats_names_disallowed)
+        self.assertEqual(ref_enabled.stats_names_disallowed["local"]["192.168.1.100"], 1)
+
+    def test_clear_command(self) -> None:
+        """Verifies that the clear command resets statistics."""
+        config = AppConfig(interfaces=["eth0"], default_action="drop", rules=[])
+        reflector = MdnsReflector(config)
+        reflector.stats_total = 5
+        reflector.stats_hosts = {"192.168.1.50": {"packets_sent": 2}}
+        reflector.stats_names_allowed = {"test.local": {"192.168.1.50": 1}}
+
+        resp = reflector._process_command(b'{"command": "clear"}')
+        self.assertEqual(resp["status"], "ok")
+        self.assertEqual(reflector.stats_total, 0)
+        self.assertEqual(len(reflector.stats_hosts), 0)
+        self.assertEqual(len(reflector.stats_names_allowed), 0)
+
+    def test_command_server_integration(self) -> None:
+        """Tests TCP socket connection, JSON command processing, and buffer limits."""
+        config = AppConfig(
+            interfaces=["eth0"],
+            default_action="drop",
+            command_server=CommandServerConfig(enabled=True, host="127.0.0.1", port=0),
+            rules=[],
+        )
+        reflector = MdnsReflector(config)
+        reflector.try_initialize_command_server()
+        self.assertIsNotNone(reflector.tcp_listener)
+        assert reflector.tcp_listener is not None
+
+        # Get allocated port
+        port = reflector.tcp_listener.getsockname()[1]
+
+        # Mock stats
+        reflector.stats_total = 10
+        reflector.stats_forwarded = 7
+        reflector.stats_dropped = 3
+
+        # Connect client socket
+        client = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        client.connect(("127.0.0.1", port))
+        client.setblocking(True)
+
+        # Accept in reflector
+        client_sock, _ = reflector.tcp_listener.accept()
+        client_sock.setblocking(False)
+        reflector.tcp_clients[client_sock] = bytearray()
+
+        # Send stats command
+        client.sendall(b'{"command": "stats"}\x00')
+
+        # Run handle client data
+        reflector._handle_client_data(client_sock)
+
+        # Client receives response
+        response_bytes = client.recv(4096)
+        self.assertTrue(response_bytes.endswith(b"\x00"))
+        response = json.loads(response_bytes[:-1].decode("utf-8"))
+        self.assertEqual(response["status"], "ok")
+        self.assertEqual(response["data"]["total"], 10)
+        self.assertEqual(response["data"]["forwarded"], 7)
+        self.assertEqual(response["data"]["dropped"], 3)
+
+        # Test buffer limit check (4097 bytes of 'A')
+        client.sendall(b"A" * 4097)
+        reflector._handle_client_data(client_sock)
+        reflector._handle_client_data(client_sock)
+        self.assertNotIn(client_sock, reflector.tcp_clients)
+
+        # Clean up
+        client.close()
+        reflector.stop()
 
 
 if __name__ == "__main__":

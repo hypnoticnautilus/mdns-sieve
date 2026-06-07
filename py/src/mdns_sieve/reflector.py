@@ -6,13 +6,12 @@ runs the select-based event loop, and handles dynamic interface failures and rec
 """
 
 import errno
-
 import logging
 import select
 import socket
 import struct
 import time
-from typing import Dict, Set
+from typing import Dict, Set, Any, Optional
 
 # Only import fcntl on UNIX platforms to keep static tools/type checkers happy
 try:
@@ -22,6 +21,7 @@ except ImportError:
 
 from mdns_sieve.config import AppConfig
 from mdns_sieve.mdns_parser import parse_mdns_packet, MdnsParsingError, DNSPacket
+from mdns_sieve.command_server import CommandServerManager
 
 logger = logging.getLogger("mdns_sieve.reflector")
 
@@ -38,6 +38,98 @@ class MdnsReflector:
         self.last_retry_time: float = 0.0
         self.retry_interval: float = 10.0  # Seconds between reconnection retries
         self.running: bool = False
+
+        self.command_server = CommandServerManager(config.command_server)
+
+    @property
+    def stats_total(self) -> int:
+        """Gets the total packets stats counter."""
+        return self.command_server.stats_total
+
+    @stats_total.setter
+    def stats_total(self, val: int) -> None:
+        """Sets the total packets stats counter."""
+        self.command_server.stats_total = val
+
+    @property
+    def stats_forwarded(self) -> int:
+        """Gets the forwarded packets stats counter."""
+        return self.command_server.stats_forwarded
+
+    @stats_forwarded.setter
+    def stats_forwarded(self, val: int) -> None:
+        """Sets the forwarded packets stats counter."""
+        self.command_server.stats_forwarded = val
+
+    @property
+    def stats_dropped(self) -> int:
+        """Gets the dropped packets stats counter."""
+        return self.command_server.stats_dropped
+
+    @stats_dropped.setter
+    def stats_dropped(self, val: int) -> None:
+        """Sets the dropped packets stats counter."""
+        self.command_server.stats_dropped = val
+
+    @property
+    def stats_rewritten(self) -> int:
+        """Gets the rewritten packets stats counter."""
+        return self.command_server.stats_rewritten
+
+    @stats_rewritten.setter
+    def stats_rewritten(self, val: int) -> None:
+        """Sets the rewritten packets stats counter."""
+        self.command_server.stats_rewritten = val
+
+    @property
+    def stats_hosts(self) -> Dict[str, Dict[str, Any]]:
+        """Gets the host-specific packet metadata dictionary."""
+        return self.command_server.stats_hosts
+
+    @stats_hosts.setter
+    def stats_hosts(self, val: Dict[str, Dict[str, Any]]) -> None:
+        """Sets the host-specific packet metadata dictionary."""
+        self.command_server.stats_hosts = val
+
+    @property
+    def stats_names_allowed(self) -> Dict[str, Dict[str, int]]:
+        """Gets the dictionary of allowed names with hit counts nested by source IP."""
+        return self.command_server.stats_names_allowed
+
+    @stats_names_allowed.setter
+    def stats_names_allowed(self, val: Dict[str, Dict[str, int]]) -> None:
+        """Sets the dictionary of allowed names with hit counts nested by source IP."""
+        self.command_server.stats_names_allowed = val
+
+    @property
+    def stats_names_disallowed(self) -> Dict[str, Dict[str, int]]:
+        """Gets the dictionary of disallowed names with hit counts nested by source IP."""
+        return self.command_server.stats_names_disallowed
+
+    @stats_names_disallowed.setter
+    def stats_names_disallowed(self, val: Dict[str, Dict[str, int]]) -> None:
+        """Sets the dictionary of disallowed names with hit counts nested by source IP."""
+        self.command_server.stats_names_disallowed = val
+
+    @property
+    def tcp_listener(self) -> Optional[socket.socket]:
+        """Gets the TCP command server listener socket."""
+        return self.command_server.tcp_listener
+
+    @tcp_listener.setter
+    def tcp_listener(self, val: Optional[socket.socket]) -> None:
+        """Sets the TCP command server listener socket."""
+        self.command_server.tcp_listener = val
+
+    @property
+    def tcp_clients(self) -> Dict[socket.socket, bytearray]:
+        """Gets the dictionary mapping active client sockets to their receive buffers."""
+        return self.command_server.tcp_clients
+
+    @tcp_clients.setter
+    def tcp_clients(self, val: Dict[socket.socket, bytearray]) -> None:
+        """Sets the dictionary mapping active client sockets to their receive buffers."""
+        self.command_server.tcp_clients = val
 
     def get_interface_ip(self, ifname: str) -> str:
         """
@@ -148,7 +240,7 @@ class MdnsReflector:
         logger.error("Interface %s marked OFFLINE. Reconnection scheduled.", ifname)
 
     # pylint: disable=too-many-branches,too-many-locals,too-many-statements
-    def handle_packet(self, src_interface: str, data: bytes) -> None:
+    def handle_packet(self, src_interface: str, data: bytes, src_ip: str = "0.0.0.0") -> None:
         """Parses a packet, evaluates filtering rules, and replicates to forwarded interfaces."""
         try:
             packet = parse_mdns_packet(data)
@@ -163,9 +255,18 @@ class MdnsReflector:
 
         names_desc = f"questions: {sorted(q_names)}, answers: {sorted(a_names)}"
 
+        is_forwarded_any = False
+        is_rewritten_any = False
+        dest_count = 0
+
+        all_pkt_names = q_names | a_names
+        allowed_names_packet: Set[str] = set()
+        disallowed_names_packet: Set[str] = set()
+
         for dst_interface, sock in list(self.sockets.items()):
             if dst_interface == src_interface:
                 continue
+            dest_count += 1
 
             if self.config.rewrite_mixed_packets:
                 filtered_questions = [
@@ -202,6 +303,7 @@ class MdnsReflector:
                 stripped_a = total_orig_a - kept_a
 
                 if kept_q == 0 and kept_a == 0:
+                    disallowed_names_packet.update(all_pkt_names)
                     logger.debug(
                         "Dropped mDNS packet from %s -> %s for names: %s",
                         src_interface,
@@ -209,6 +311,8 @@ class MdnsReflector:
                         names_desc,
                     )
                 elif stripped_q == 0 and stripped_a == 0:
+                    allowed_names_packet.update(all_pkt_names)
+                    is_forwarded_any = True
                     logger.debug(
                         "Forwarding mDNS packet (%d bytes) from %s -> %s for names: %s",
                         len(data),
@@ -223,6 +327,16 @@ class MdnsReflector:
                         if e.errno in (errno.EBADF, errno.ENETDOWN, errno.ENETUNREACH):
                             self.mark_interface_offline(dst_interface)
                 else:
+                    kept_names = {q.name for q in filtered_questions}
+                    for rr in filtered_answers + filtered_authorities + filtered_additionals:
+                        kept_names.add(rr.name)
+                        if rr.target_name:
+                            kept_names.add(rr.target_name)
+                    stripped_names = all_pkt_names - kept_names
+                    allowed_names_packet.update(kept_names)
+                    disallowed_names_packet.update(stripped_names)
+                    is_rewritten_any = True
+
                     rewritten_packet = DNSPacket(
                         transaction_id=packet.transaction_id,
                         flags=packet.flags,
@@ -262,6 +376,8 @@ class MdnsReflector:
                             self.mark_interface_offline(dst_interface)
             else:
                 if self.config.should_forward(src_interface, dst_interface, q_names, a_names):
+                    allowed_names_packet.update(all_pkt_names)
+                    is_forwarded_any = True
                     logger.debug(
                         "Forwarding mDNS packet (%d bytes) from %s -> %s for names: %s",
                         len(data),
@@ -276,6 +392,7 @@ class MdnsReflector:
                         if e.errno in (errno.EBADF, errno.ENETDOWN, errno.ENETUNREACH):
                             self.mark_interface_offline(dst_interface)
                 else:
+                    disallowed_names_packet.update(all_pkt_names)
                     is_mixed = False
                     if q_names and a_names:
                         q_forward = self.config.should_forward(
@@ -303,28 +420,79 @@ class MdnsReflector:
                             names_desc,
                         )
 
+        if dest_count == 0:
+            disallowed_names_packet.update(all_pkt_names)
+
+        if is_rewritten_any:
+            action = "rewritten"
+        elif is_forwarded_any:
+            action = "forwarded"
+        else:
+            action = "dropped"
+
+        self._collect_stats(
+            src_interface,
+            src_ip,
+            action,
+            allowed_names_packet,
+            disallowed_names_packet,
+        )
+
+    def _collect_stats(
+        self,
+        src_interface: str,
+        src_ip: str,
+        action: str,
+        allowed_names: Set[str],
+        disallowed_names: Set[str],
+    ) -> None:
+        """Helper to collect routing and name statistics for the command server."""
+        self.command_server.collect_stats(
+            src_interface, src_ip, action, allowed_names, disallowed_names, time.time()
+        )
+
+    def try_initialize_command_server(self) -> None:
+        """Initializes the TCP command/statistics listener socket if enabled."""
+        self.command_server.try_initialize()
+
+    def _handle_client_data(self, client_sock: socket.socket) -> None:
+        """Reads data from a client TCP socket, parses commands, and sends responses."""
+        self.command_server.handle_client_data(client_sock)
+
+    def _process_command(self, cmd_bytes: bytes) -> Dict[str, Any]:
+        """Parses and executes a command payload, returning the JSON dict response."""
+        return self.command_server.process_command(cmd_bytes)
+
     # pylint: disable=too-many-branches
     def run(self) -> None:
         """Starts the main select-based routing event loop."""
         self.running = True
+        self.try_initialize_command_server()
         self.try_initialize_interfaces()
 
         logger.info("mDNS Sieve Reflector is active.")
         while self.running:
             now = time.time()
             if now - self.last_retry_time >= self.retry_interval:
+                self.try_initialize_command_server()
                 self.try_initialize_interfaces()
 
             # Build socket poll dictionary mapping fd -> (sock, interface)
             active_sockets = {sock: ifname for ifname, sock in self.sockets.items()}
-            if not active_sockets:
-                logger.debug("No active interfaces. Waiting for recovery...")
+            if not active_sockets and self.tcp_listener is None and not self.tcp_clients:
+                logger.debug("No active interfaces or clients. Waiting for recovery...")
                 time.sleep(1.0)
                 continue
 
+            # Build select read list
+            read_sockets = list(active_sockets.keys())
+            if self.tcp_listener is not None:
+                read_sockets.append(self.tcp_listener)
+            read_sockets.extend(self.tcp_clients.keys())
+
             try:
                 readable, _, errored = select.select(
-                    list(active_sockets.keys()),
+                    read_sockets,
                     [],
                     list(active_sockets.keys()),
                     1.0,  # Timeout of 1s to allow periodic interface retry checks
@@ -356,25 +524,41 @@ class MdnsReflector:
 
             # Process readable sockets
             for sock in readable:
-                ifname = active_sockets[sock]
+                if sock == self.tcp_listener:
+                    try:
+                        client_sock, client_addr = self.tcp_listener.accept()
+                        client_sock.setblocking(False)
+                        self.tcp_clients[client_sock] = bytearray()
+                        logger.debug("Accepted TCP connection from %s", str(client_addr))
+                    except OSError as e:
+                        logger.error("Failed to accept TCP connection: %s", str(e))
+                elif sock in self.tcp_clients:
+                    self._handle_client_data(sock)
+                else:
+                    ifname = active_sockets[sock]
 
-                try:
-                    data, addr = sock.recvfrom(4096)
-                except OSError as e:
-                    if e.errno not in (errno.EWOULDBLOCK, errno.EAGAIN):
-                        self.mark_interface_offline(ifname)
-                    continue
+                    try:
+                        data, addr = sock.recvfrom(4096)
+                    except OSError as e:
+                        if e.errno not in (errno.EWOULDBLOCK, errno.EAGAIN):
+                            self.mark_interface_offline(ifname)
+                        continue
 
-                # Ignore packets echoed from our own host IP address
-                if addr[0] == self.interface_ips.get(ifname):
-                    continue
+                    # Ignore packets echoed from our own host IP address
+                    if addr[0] == self.interface_ips.get(ifname):
+                        continue
 
-                self.handle_packet(ifname, data)
+                    self.handle_packet(ifname, data, addr[0])
 
     def stop(self) -> None:
         """Stops the event loop and cleans up open sockets."""
         self.running = False
         logger.info("Stopping reflector and releasing sockets...")
+
+        # Clean up TCP listener & clients
+        self.command_server.stop()
+
+        # Clean up UDP sockets
         for sock in list(self.sockets.values()):
             try:
                 sock.close()

@@ -3,9 +3,9 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "mdns-sieve"
+name = "mdns-sieve-gui"
 version = "0.1.0"
-description = "A lightweight, dependency-free mDNS reflector with fine-grained filtering."
+description = "A zero-dependency web-based dashboard and HTTP-to-TCP API bridge for mdns-sieve server."
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
@@ -26,10 +26,10 @@ dependencies = [
 ]
 
 [project.scripts]
-mdns-sieve = "mdns_sieve.main:main"
+mdns-sieve-gui = "mdns_sieve_gui.main:main"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/mdns_sieve"]
+packages = ["src/mdns_sieve_gui"]
 
 [tool.ruff]
 line-length = 100
