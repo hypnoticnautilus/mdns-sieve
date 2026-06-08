@@ -163,11 +163,11 @@
             <table class="hosts-table">
               <thead>
                 <tr>
-                  <th>IP Address</th>
-                  <th>Interface</th>
-                  <th>Packets</th>
-                  <th>Status</th>
-                  <th>Last Active</th>
+                  <th onclick="setHostsSort('ip')" class="sortable-th">IP Address <span id="sortIcon-ip"></span></th>
+                  <th onclick="setHostsSort('interface')" class="sortable-th">Interface <span id="sortIcon-interface"></span></th>
+                  <th onclick="setHostsSort('packets')" class="sortable-th">Packets <span id="sortIcon-packets"></span></th>
+                  <th onclick="setHostsSort('status')" class="sortable-th">Status <span id="sortIcon-status"></span></th>
+                  <th onclick="setHostsSort('last_seen')" class="sortable-th">Last Active <span id="sortIcon-last_seen"></span></th>
                 </tr>
               </thead>
               <tbody id="hostsTableBody">

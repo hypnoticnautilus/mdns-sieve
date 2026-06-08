@@ -500,6 +500,16 @@ input:checked + .slider:before {
   background-color: var(--table-header-bg);
 }
 
+.sortable-th {
+  cursor: pointer;
+  user-select: none;
+  transition: color 0.2s ease;
+}
+
+.sortable-th:hover {
+  color: var(--color-primary);
+}
+
 .hosts-table td {
   border-bottom: 1px solid var(--border-color);
   color: var(--text-primary);

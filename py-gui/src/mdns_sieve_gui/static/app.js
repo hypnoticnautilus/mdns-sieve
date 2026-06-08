@@ -6,6 +6,11 @@ let refreshTimer = null;
 let currentTab = 'forwarded_queries';
 let lastStatsData = null;
 
+// Active hosts sorting state
+let hostsSortCol = 'packets';
+let hostsSortDir = 'desc';
+let latestHostsData = {};
+
 // Sieve daemon details (updated dynamically from API responses)
 let daemonHost = '127.0.0.1';
 let daemonPort = 5354;
@@ -254,27 +259,87 @@ function updateStats(data) {
 }
 
 function updateHosts(data) {
-  const tbody = document.getElementById('hostsTableBody');
-  tbody.innerHTML = '';
+  latestHostsData = data || {};
+  renderHostsTable();
+}
 
-  const hosts = Object.entries(data);
+function setHostsSort(col) {
+  if (hostsSortCol === col) {
+    hostsSortDir = hostsSortDir === 'asc' ? 'desc' : 'asc';
+  } else {
+    hostsSortCol = col;
+    hostsSortDir = (col === 'packets' || col === 'last_seen') ? 'desc' : 'asc';
+  }
+  renderHostsTable();
+}
+
+function renderHostsTable() {
+  const tbody = document.getElementById('hostsTableBody');
+  if (!tbody) return;
+
+  const hosts = Object.entries(latestHostsData);
+  
+  // Update sort icons in table headers
+  const cols = ['ip', 'interface', 'packets', 'status', 'last_seen'];
+  cols.forEach(c => {
+    const iconSpan = document.getElementById(`sortIcon-${c}`);
+    if (iconSpan) {
+      if (hostsSortCol === c) {
+        iconSpan.textContent = hostsSortDir === 'asc' ? ' ▲' : ' ▼';
+        iconSpan.style.opacity = '1';
+      } else {
+        iconSpan.textContent = '';
+        iconSpan.style.opacity = '0.3';
+      }
+    }
+  });
+
   if (hosts.length === 0) {
     tbody.innerHTML = `<tr><td colspan="5" class="table-empty">No active hosts discovered.</td></tr>`;
     return;
   }
 
-  // Sort by packets sent descending
-  hosts.sort((a, b) => b[1].packets_sent - a[1].packets_sent);
-
   const nowSecs = Date.now() / 1000;
 
+  hosts.sort((a, b) => {
+    let valA, valB;
+    if (hostsSortCol === 'ip') {
+      valA = a[0];
+      valB = b[0];
+    } else if (hostsSortCol === 'interface') {
+      valA = a[1].last_interface;
+      valB = b[1].last_interface;
+    } else if (hostsSortCol === 'packets') {
+      valA = a[1].packets_sent;
+      valB = b[1].packets_sent;
+    } else if (hostsSortCol === 'status') {
+      const elapsedA = nowSecs - a[1].last_seen_time;
+      const elapsedB = nowSecs - b[1].last_seen_time;
+      valA = elapsedA < 60 ? 1 : 0;
+      valB = elapsedB < 60 ? 1 : 0;
+    } else if (hostsSortCol === 'last_seen') {
+      valA = a[1].last_seen_time;
+      valB = b[1].last_seen_time;
+    }
+
+    if (typeof valA === 'string') {
+      return hostsSortDir === 'asc' 
+        ? valA.localeCompare(valB) 
+        : valB.localeCompare(valA);
+    } else {
+      return hostsSortDir === 'asc'
+        ? valA - valB
+        : valB - valA;
+    }
+  });
+
+  tbody.innerHTML = '';
   hosts.forEach(([ip, info]) => {
     const elapsed = nowSecs - info.last_seen_time;
-    const isActive = elapsed < 60; // Active if seen in the last 60 seconds
+    const isActive = elapsed < 60;
     const statusText = isActive ? 'Active' : 'Idle';
     const statusClass = isActive ? 'active' : 'idle';
 
-    // Format relative activity string
     let relativeActive = '';
     if (elapsed < 1) {
       relativeActive = 'Just now';
