@@ -467,10 +467,19 @@ input:checked + .slider:before {
   gap: 20px;
 }
 
+.hosts-section,
+.domains-section {
+  max-height: calc(100vh - 44px);
+  min-height: 250px;
+}
+
 /* Hosts Table Component */
 .table-container {
   padding: 12px 24px 24px 24px;
   overflow-x: auto;
+  overflow-y: auto;
+  flex: 1 1 auto;
+  min-height: 0;
 }
 
 .hosts-table {
@@ -632,7 +641,8 @@ input:checked + .slider:before {
 /* Domain List Elements */
 .domain-list-container {
   padding: 16px 24px 24px 24px;
-  height: 252px;
+  flex: 1 1 auto;
+  min-height: 0;
   overflow-y: auto;
 }
 
