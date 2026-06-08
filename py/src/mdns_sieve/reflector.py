@@ -26,7 +26,7 @@ from mdns_sieve.command_server import CommandServerManager
 logger = logging.getLogger("mdns_sieve.reflector")
 
 
-# pylint: disable=too-many-instance-attributes
+# pylint: disable=too-many-instance-attributes,too-many-public-methods
 class MdnsReflector:
     """Core daemon service running the mDNS reflection and filtering event loop."""
 
@@ -92,24 +92,44 @@ class MdnsReflector:
         self.command_server.stats_hosts = val
 
     @property
-    def stats_names_allowed(self) -> Dict[str, Dict[str, int]]:
-        """Gets the dictionary of allowed names with hit counts nested by source IP."""
-        return self.command_server.stats_names_allowed
+    def stats_names_forwarded_queries(self) -> Dict[str, Dict[str, int]]:
+        """Gets stats for forwarded queries."""
+        return self.command_server.stats_names_forwarded_queries
 
-    @stats_names_allowed.setter
-    def stats_names_allowed(self, val: Dict[str, Dict[str, int]]) -> None:
-        """Sets the dictionary of allowed names with hit counts nested by source IP."""
-        self.command_server.stats_names_allowed = val
+    @stats_names_forwarded_queries.setter
+    def stats_names_forwarded_queries(self, val: Dict[str, Dict[str, int]]) -> None:
+        """Sets stats for forwarded queries."""
+        self.command_server.stats_names_forwarded_queries = val
 
     @property
-    def stats_names_disallowed(self) -> Dict[str, Dict[str, int]]:
-        """Gets the dictionary of disallowed names with hit counts nested by source IP."""
-        return self.command_server.stats_names_disallowed
+    def stats_names_forwarded_responses(self) -> Dict[str, Dict[str, int]]:
+        """Gets stats for forwarded responses."""
+        return self.command_server.stats_names_forwarded_responses
 
-    @stats_names_disallowed.setter
-    def stats_names_disallowed(self, val: Dict[str, Dict[str, int]]) -> None:
-        """Sets the dictionary of disallowed names with hit counts nested by source IP."""
-        self.command_server.stats_names_disallowed = val
+    @stats_names_forwarded_responses.setter
+    def stats_names_forwarded_responses(self, val: Dict[str, Dict[str, int]]) -> None:
+        """Sets stats for forwarded responses."""
+        self.command_server.stats_names_forwarded_responses = val
+
+    @property
+    def stats_names_dropped_queries(self) -> Dict[str, Dict[str, int]]:
+        """Gets stats for dropped queries."""
+        return self.command_server.stats_names_dropped_queries
+
+    @stats_names_dropped_queries.setter
+    def stats_names_dropped_queries(self, val: Dict[str, Dict[str, int]]) -> None:
+        """Sets stats for dropped queries."""
+        self.command_server.stats_names_dropped_queries = val
+
+    @property
+    def stats_names_dropped_responses(self) -> Dict[str, Dict[str, int]]:
+        """Gets stats for dropped responses."""
+        return self.command_server.stats_names_dropped_responses
+
+    @stats_names_dropped_responses.setter
+    def stats_names_dropped_responses(self, val: Dict[str, Dict[str, int]]) -> None:
+        """Sets stats for dropped responses."""
+        self.command_server.stats_names_dropped_responses = val
 
     @property
     def tcp_listener(self) -> Optional[socket.socket]:
@@ -436,6 +456,7 @@ class MdnsReflector:
             action,
             allowed_names_packet,
             disallowed_names_packet,
+            packet.is_response,
         )
 
     def _collect_stats(
@@ -445,10 +466,17 @@ class MdnsReflector:
         action: str,
         allowed_names: Set[str],
         disallowed_names: Set[str],
+        is_response: bool = False,
     ) -> None:
         """Helper to collect routing and name statistics for the command server."""
         self.command_server.collect_stats(
-            src_interface, src_ip, action, allowed_names, disallowed_names, time.time()
+            src_interface,
+            src_ip,
+            action,
+            allowed_names,
+            disallowed_names,
+            time.time(),
+            is_response,
         )
 
     def try_initialize_command_server(self) -> None:

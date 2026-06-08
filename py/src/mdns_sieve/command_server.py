@@ -29,8 +29,10 @@ class CommandServerManager:
         self.stats_dropped: int = 0
         self.stats_rewritten: int = 0
         self.stats_hosts: Dict[str, Dict[str, Any]] = {}
-        self.stats_names_allowed: Dict[str, Dict[str, int]] = {}
-        self.stats_names_disallowed: Dict[str, Dict[str, int]] = {}
+        self.stats_names_forwarded_queries: Dict[str, Dict[str, int]] = {}
+        self.stats_names_forwarded_responses: Dict[str, Dict[str, int]] = {}
+        self.stats_names_dropped_queries: Dict[str, Dict[str, int]] = {}
+        self.stats_names_dropped_responses: Dict[str, Dict[str, int]] = {}
 
     def collect_stats(
         self,
@@ -40,7 +42,9 @@ class CommandServerManager:
         allowed_names: Set[str],
         disallowed_names: Set[str],
         timestamp: float,
+        is_response: bool = False,
     ) -> None:
+        # pylint: disable=too-many-branches
         """Collects routing and name statistics."""
         if not self.config_server or not self.config_server.enabled:
             return
@@ -64,19 +68,32 @@ class CommandServerManager:
         host_info["last_interface"] = src_interface
         host_info["last_seen_time"] = timestamp
 
-        for name in allowed_names:
-            if name not in self.stats_names_allowed:
-                self.stats_names_allowed[name] = {}
-            self.stats_names_allowed[name][src_ip] = (
-                self.stats_names_allowed[name].get(src_ip, 0) + 1
-            )
-
-        for name in disallowed_names:
-            if name not in self.stats_names_disallowed:
-                self.stats_names_disallowed[name] = {}
-            self.stats_names_disallowed[name][src_ip] = (
-                self.stats_names_disallowed[name].get(src_ip, 0) + 1
-            )
+        if is_response:
+            for name in allowed_names:
+                if name not in self.stats_names_forwarded_responses:
+                    self.stats_names_forwarded_responses[name] = {}
+                self.stats_names_forwarded_responses[name][src_ip] = (
+                    self.stats_names_forwarded_responses[name].get(src_ip, 0) + 1
+                )
+            for name in disallowed_names:
+                if name not in self.stats_names_dropped_responses:
+                    self.stats_names_dropped_responses[name] = {}
+                self.stats_names_dropped_responses[name][src_ip] = (
+                    self.stats_names_dropped_responses[name].get(src_ip, 0) + 1
+                )
+        else:
+            for name in allowed_names:
+                if name not in self.stats_names_forwarded_queries:
+                    self.stats_names_forwarded_queries[name] = {}
+                self.stats_names_forwarded_queries[name][src_ip] = (
+                    self.stats_names_forwarded_queries[name].get(src_ip, 0) + 1
+                )
+            for name in disallowed_names:
+                if name not in self.stats_names_dropped_queries:
+                    self.stats_names_dropped_queries[name] = {}
+                self.stats_names_dropped_queries[name][src_ip] = (
+                    self.stats_names_dropped_queries[name].get(src_ip, 0) + 1
+                )
 
     def try_initialize(self) -> None:
         """Initializes the TCP command/statistics listener socket if enabled."""
@@ -193,8 +210,10 @@ class CommandServerManager:
             return {
                 "status": "ok",
                 "data": {
-                    "allowed": self.stats_names_allowed,
-                    "disallowed": self.stats_names_disallowed,
+                    "forwarded_queries": self.stats_names_forwarded_queries,
+                    "forwarded_responses": self.stats_names_forwarded_responses,
+                    "dropped_queries": self.stats_names_dropped_queries,
+                    "dropped_responses": self.stats_names_dropped_responses,
                 },
             }
         if cmd == "clear":
@@ -203,8 +222,10 @@ class CommandServerManager:
             self.stats_dropped = 0
             self.stats_rewritten = 0
             self.stats_hosts.clear()
-            self.stats_names_allowed.clear()
-            self.stats_names_disallowed.clear()
+            self.stats_names_forwarded_queries.clear()
+            self.stats_names_forwarded_responses.clear()
+            self.stats_names_dropped_queries.clear()
+            self.stats_names_dropped_responses.clear()
             return {"status": "ok"}
 
         return {"status": "error", "error": "Unknown command"}

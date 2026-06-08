@@ -3,7 +3,7 @@ let currentTheme = localStorage.getItem('theme') || 'system';
 let autoRefreshInterval = parseInt(localStorage.getItem('refreshInterval') || '8', 10);
 let chartWindowSize = parseInt(localStorage.getItem('chartWindow') || '30', 10);
 let refreshTimer = null;
-let currentTab = 'allowed';
+let currentTab = 'forwarded_queries';
 let lastStatsData = null;
 
 // Sieve daemon details (updated dynamically from API responses)
@@ -11,8 +11,10 @@ let daemonHost = '127.0.0.1';
 let daemonPort = 5354;
 
 // Cache stats for domain filtering
-let allowedDomainsCache = {};
-let disallowedDomainsCache = {};
+let fwdQueriesCache = {};
+let fwdResponsesCache = {};
+let dropQueriesCache = {};
+let dropResponsesCache = {};
 let expandedDomains = new Set();
 
 // Chart.js Instances
@@ -302,20 +304,26 @@ function updateHosts(data) {
 }
 
 function updateDomains(data) {
-  allowedDomainsCache = data.allowed || {};
-  disallowedDomainsCache = data.disallowed || {};
+  fwdQueriesCache = data.forwarded_queries || {};
+  fwdResponsesCache = data.forwarded_responses || {};
+  dropQueriesCache = data.dropped_queries || {};
+  dropResponsesCache = data.dropped_responses || {};
 
   // Update tabs badges count
-  document.getElementById('badgeAllowed').textContent = Object.keys(allowedDomainsCache).length;
-  document.getElementById('badgeDisallowed').textContent = Object.keys(disallowedDomainsCache).length;
+  document.getElementById('badgeFwdQueries').textContent = Object.keys(fwdQueriesCache).length;
+  document.getElementById('badgeFwdResponses').textContent = Object.keys(fwdResponsesCache).length;
+  document.getElementById('badgeDropQueries').textContent = Object.keys(dropQueriesCache).length;
+  document.getElementById('badgeDropResponses').textContent = Object.keys(dropResponsesCache).length;
 
   filterDomains();
 }
 
 function switchDomainTab(tab) {
   currentTab = tab;
-  document.getElementById('tabAllowed').classList.toggle('active', tab === 'allowed');
-  document.getElementById('tabDisallowed').classList.toggle('active', tab === 'disallowed');
+  document.getElementById('tabFwdQueries').classList.toggle('active', tab === 'forwarded_queries');
+  document.getElementById('tabFwdResponses').classList.toggle('active', tab === 'forwarded_responses');
+  document.getElementById('tabDropQueries').classList.toggle('active', tab === 'dropped_queries');
+  document.getElementById('tabDropResponses').classList.toggle('active', tab === 'dropped_responses');
   filterDomains();
 }
 
@@ -324,7 +332,13 @@ function filterDomains() {
   const listContainer = document.getElementById('domainList');
   listContainer.innerHTML = '';
 
-  const cache = currentTab === 'allowed' ? allowedDomainsCache : disallowedDomainsCache;
+  const cacheMap = {
+    'forwarded_queries': fwdQueriesCache,
+    'forwarded_responses': fwdResponsesCache,
+    'dropped_queries': dropQueriesCache,
+    'dropped_responses': dropResponsesCache
+  };
+  const cache = cacheMap[currentTab] || {};
   const entries = Object.entries(cache);
 
   const filtered = entries.filter(([name]) => name.toLowerCase().includes(query));

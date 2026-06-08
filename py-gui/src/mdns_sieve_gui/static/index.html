@@ -191,11 +191,17 @@
           </div>
 
           <div class="tabs">
-            <button id="tabAllowed" class="tab-btn active" onclick="switchDomainTab('allowed')">
-              Allowed <span class="badge" id="badgeAllowed">0</span>
+            <button id="tabFwdQueries" class="tab-btn active" onclick="switchDomainTab('forwarded_queries')">
+              Fwd Queries <span class="badge" id="badgeFwdQueries">0</span>
             </button>
-            <button id="tabDisallowed" class="tab-btn" onclick="switchDomainTab('disallowed')">
-              Disallowed <span class="badge danger" id="badgeDisallowed">0</span>
+            <button id="tabFwdResponses" class="tab-btn" onclick="switchDomainTab('forwarded_responses')">
+              Fwd Responses <span class="badge" id="badgeFwdResponses">0</span>
+            </button>
+            <button id="tabDropQueries" class="tab-btn" onclick="switchDomainTab('dropped_queries')">
+              Drop Queries <span class="badge danger" id="badgeDropQueries">0</span>
+            </button>
+            <button id="tabDropResponses" class="tab-btn" onclick="switchDomainTab('dropped_responses')">
+              Drop Responses <span class="badge danger" id="badgeDropResponses">0</span>
             </button>
           </div>
 

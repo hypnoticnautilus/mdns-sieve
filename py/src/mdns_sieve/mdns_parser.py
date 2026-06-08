@@ -80,6 +80,11 @@ class DNSPacket:
             self._extracted_answer_names = names
         return self._extracted_answer_names
 
+    @property
+    def is_response(self) -> bool:
+        """Returns True if this is a response packet, False if it is a query packet."""
+        return (self.flags & 0x8000) != 0
+
     def serialize(self) -> bytes:
         """
         Serializes the DNSPacket back into a binary DNS/mDNS payload.

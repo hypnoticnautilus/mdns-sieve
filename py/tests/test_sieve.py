@@ -792,8 +792,8 @@ rules: []
         self.assertEqual(host_info["last_interface"], "eth0")
 
         # Verify nested names allowed and disallowed by IP
-        self.assertIn("local", ref_enabled.stats_names_disallowed)
-        self.assertEqual(ref_enabled.stats_names_disallowed["local"]["192.168.1.100"], 1)
+        self.assertIn("local", ref_enabled.stats_names_dropped_queries)
+        self.assertEqual(ref_enabled.stats_names_dropped_queries["local"]["192.168.1.100"], 1)
 
     def test_clear_command(self) -> None:
         """Verifies that the clear command resets statistics."""
@@ -801,13 +801,13 @@ rules: []
         reflector = MdnsReflector(config)
         reflector.stats_total = 5
         reflector.stats_hosts = {"192.168.1.50": {"packets_sent": 2}}
-        reflector.stats_names_allowed = {"test.local": {"192.168.1.50": 1}}
+        reflector.stats_names_forwarded_queries = {"test.local": {"192.168.1.50": 1}}
 
         resp = reflector._process_command(b'{"command": "clear"}')
         self.assertEqual(resp["status"], "ok")
         self.assertEqual(reflector.stats_total, 0)
         self.assertEqual(len(reflector.stats_hosts), 0)
-        self.assertEqual(len(reflector.stats_names_allowed), 0)
+        self.assertEqual(len(reflector.stats_names_forwarded_queries), 0)
 
     def test_command_server_integration(self) -> None:
         """Tests TCP socket connection, JSON command processing, and buffer limits."""
