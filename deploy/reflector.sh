@@ -1,0 +1,26 @@
+#!/bin/sh
+
+set -e
+
+SCRIPT_DIR="$(dirname "$0")"
+PROJECT_DIR=$(dirname "$SCRIPT_DIR")
+
+HOST="$1"
+HOST_PY="$2"
+HOST_CONFIG="$3"
+
+TD="$(mktemp -d)"
+trap "rm -rf \"$TD\"" EXIT
+python3 -m pip wheel --no-deps -w "$TD" "$PROJECT_DIR"/py
+
+TD2="$(ssh "$HOST" mktemp -d)"
+scp "$TD"/*.whl "$HOST:$TD2"
+
+ssh "$HOST" sh <<EOF
+set -e
+trap "rm -rf \"$TD\"" EXIT
+"$HOST_PY" -m pip uninstall -y mdns-sieve
+"$HOST_PY" -m pip install -f "$TD2" mdns-sieve
+pkill -fe mdns_sieve.main || true
+nohup "$HOST_PY" -m mdns_sieve.main -c "$HOST_CONFIG" 2>&1 > /var/log/mdns-sieve.log &
+EOF
