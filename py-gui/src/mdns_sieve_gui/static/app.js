@@ -378,27 +378,23 @@ function renderHostsTable() {
   });
 }
 
-function updateDomains(data) {
-  fwdQueriesCache = data.forwarded_queries || {};
-  fwdResponsesCache = data.forwarded_responses || {};
-  dropQueriesCache = data.dropped_queries || {};
-  dropResponsesCache = data.dropped_responses || {};
+let queriesCache = {};
+let responsesCache = {};
 
-  // Update tabs badges count
-  document.getElementById('badgeFwdQueries').textContent = Object.keys(fwdQueriesCache).length;
-  document.getElementById('badgeFwdResponses').textContent = Object.keys(fwdResponsesCache).length;
-  document.getElementById('badgeDropQueries').textContent = Object.keys(dropQueriesCache).length;
-  document.getElementById('badgeDropResponses').textContent = Object.keys(dropResponsesCache).length;
+function updateDomains(data) {
+  queriesCache = data.queries || {};
+  responsesCache = data.responses || {};
+
+  document.getElementById('badgeQueries').textContent = Object.keys(queriesCache).length;
+  document.getElementById('badgeResponses').textContent = Object.keys(responsesCache).length;
 
   filterDomains();
 }
 
 function switchDomainTab(tab) {
   currentTab = tab;
-  document.getElementById('tabFwdQueries').classList.toggle('active', tab === 'forwarded_queries');
-  document.getElementById('tabFwdResponses').classList.toggle('active', tab === 'forwarded_responses');
-  document.getElementById('tabDropQueries').classList.toggle('active', tab === 'dropped_queries');
-  document.getElementById('tabDropResponses').classList.toggle('active', tab === 'dropped_responses');
+  document.getElementById('tabQueries').classList.toggle('active', tab === 'queries');
+  document.getElementById('tabResponses').classList.toggle('active', tab === 'responses');
   filterDomains();
 }
 
@@ -407,13 +403,7 @@ function filterDomains() {
   const listContainer = document.getElementById('domainList');
   listContainer.innerHTML = '';
 
-  const cacheMap = {
-    'forwarded_queries': fwdQueriesCache,
-    'forwarded_responses': fwdResponsesCache,
-    'dropped_queries': dropQueriesCache,
-    'dropped_responses': dropResponsesCache
-  };
-  const cache = cacheMap[currentTab] || {};
+  const cache = currentTab === 'responses' ? responsesCache : queriesCache;
   const entries = Object.entries(cache);
 
   const filtered = entries.filter(([name]) => name.toLowerCase().includes(query));
@@ -426,8 +416,9 @@ function filterDomains() {
   // Sort domains alphabetically
   filtered.sort((a, b) => a[0].localeCompare(b[0]));
 
-  filtered.forEach(([name, ipCounts]) => {
-    const totalHits = Object.values(ipCounts).reduce((a, b) => a + b, 0);
+  filtered.forEach(([name, ipData]) => {
+    // ipData is { "IP": { packets, fwd, drop } }
+    const totalHits = Object.values(ipData).reduce((sum, info) => sum + info.packets, 0);
     const isExpanded = expandedDomains.has(name);
 
     const itemDiv = document.createElement('div');
@@ -443,7 +434,7 @@ function filterDomains() {
         <i data-lucide="${arrowIcon}"></i>
         <span>${name}</span>
       </div>
-      <span class="domain-total-hits">${totalHits.toLocaleString()} hits</span>
+      <span class="domain-total-hits">${totalHits.toLocaleString()} packets</span>
     `;
 
     itemDiv.appendChild(headerDiv);
@@ -452,14 +443,30 @@ function filterDomains() {
       const detailsDiv = document.createElement('div');
       detailsDiv.className = 'domain-details';
 
-      // Sort source IPs by count descending
-      const sortedIps = Object.entries(ipCounts).sort((a, b) => b[1] - a[1]);
-      sortedIps.forEach(([ip, hits]) => {
+      // Sort source IPs by packet count descending
+      const sortedIps = Object.entries(ipData).sort((a, b) => b[1].packets - a[1].packets);
+      sortedIps.forEach(([ip, info]) => {
         const ipRow = document.createElement('div');
         ipRow.className = 'detail-ip-row';
+        
+        let badgesHtml = '';
+        if (info.fwd) {
+           info.fwd.split(',').forEach(iface => {
+               badgesHtml += `<span class="route-badge-fwd" title="Forwarded">Fwd: ${iface}</span>`;
+           });
+        }
+        if (info.drop) {
+           info.drop.split(',').forEach(iface => {
+               badgesHtml += `<span class="route-badge-drop" title="Dropped">Drop: ${iface}</span>`;
+           });
+        }
+
         ipRow.innerHTML = `
           <span>${ip}</span>
-          <span><strong>${hits.toLocaleString()} hits</strong></span>
+          <div style="display: flex; gap: 8px; align-items: center;">
+            <div style="display: flex; gap: 4px;">${badgesHtml}</div>
+            <span><strong>${info.packets.toLocaleString()} packets</strong></span>
+          </div>
         `;
         detailsDiv.appendChild(ipRow);
       });
@@ -726,6 +733,57 @@ async function confirmClearStats() {
 /* ==========================================================================
    Host Details Modal Action Handler
    ========================================================================== */
+let modalCurrentTab = 'queries';
+let modalHostQueries = [];
+let modalHostResponses = [];
+
+function switchModalTab(tab) {
+  modalCurrentTab = tab;
+  document.getElementById('modalTabQueriesBtn').classList.toggle('active', tab === 'queries');
+  document.getElementById('modalTabResponsesBtn').classList.toggle('active', tab === 'responses');
+  renderHostDetailsTable();
+}
+
+function renderHostDetailsTable() {
+  const tbody = document.getElementById('hostDetailsTableBody');
+  const records = modalCurrentTab === 'queries' ? modalHostQueries : modalHostResponses;
+  
+  tbody.innerHTML = '';
+  if (records.length === 0) {
+    tbody.innerHTML = '<tr><td colspan="3" class="table-empty">No records found.</td></tr>';
+    return;
+  }
+  
+  // Sort by packet count descending
+  records.sort((a, b) => b.packet_count - a.packet_count);
+  
+  records.forEach(r => {
+    let badgesHtml = '';
+    if (r.last_forwarded_interfaces) {
+      r.last_forwarded_interfaces.split(',').forEach(iface => {
+        badgesHtml += `<span class="route-badge-fwd" title="Forwarded">Fwd: ${iface}</span>`;
+      });
+    }
+    if (r.last_dropped_interfaces) {
+      r.last_dropped_interfaces.split(',').forEach(iface => {
+        badgesHtml += `<span class="route-badge-drop" title="Dropped">Drop: ${iface}</span>`;
+      });
+    }
+    
+    const tr = document.createElement('tr');
+    tr.innerHTML = `
+      <td><strong>${r.service_type}</strong></td>
+      <td>${r.packet_count.toLocaleString()}</td>
+      <td>
+        <div style="display: flex; gap: 4px; flex-wrap: wrap;">
+          ${badgesHtml || '<span style="color: var(--text-muted); font-size: 11px;">None</span>'}
+        </div>
+      </td>
+    `;
+    tbody.appendChild(tr);
+  });
+}
+
 async function showHostDetails(ip) {
   document.getElementById('hostDetailsTitle').textContent = `Host Details: ${ip}`;
   
@@ -741,34 +799,17 @@ async function showHostDetails(ip) {
   
   try {
     const res = await fetchApi(`/api/host_details?ip=${encodeURIComponent(ip)}`);
-    const queries = res.data.queries || [];
-    const responses = res.data.responses || [];
+    modalHostQueries = res.data.queries || [];
+    modalHostResponses = res.data.responses || [];
     
     loading.classList.add('hidden');
     
-    if (queries.length === 0 && responses.length === 0) {
+    if (modalHostQueries.length === 0 && modalHostResponses.length === 0) {
       empty.textContent = 'No tracking data available for this host. Ensure tracking is enabled in configuration.';
       empty.classList.remove('hidden');
     } else {
       content.classList.remove('hidden');
-      
-      const qList = document.getElementById('hostQueriesList');
-      qList.innerHTML = '';
-      queries.forEach(q => {
-        const li = document.createElement('li');
-        li.textContent = q;
-        qList.appendChild(li);
-      });
-      if (queries.length === 0) qList.innerHTML = '<li style="color: var(--text-muted)">None recorded</li>';
-      
-      const rList = document.getElementById('hostResponsesList');
-      rList.innerHTML = '';
-      responses.forEach(r => {
-        const li = document.createElement('li');
-        li.textContent = r;
-        rList.appendChild(li);
-      });
-      if (responses.length === 0) rList.innerHTML = '<li style="color: var(--text-muted)">None recorded</li>';
+      switchModalTab('queries');
     }
   } catch (err) {
     loading.classList.add('hidden');

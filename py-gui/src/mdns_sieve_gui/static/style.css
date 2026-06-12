@@ -959,3 +959,26 @@ input:checked + .slider:before {
 .details-list li:last-child {
   border-bottom: none;
 }
+
+/* Route Badges */
+.route-badge-fwd {
+  display: inline-block;
+  padding: 2px 6px;
+  background-color: rgba(16, 185, 129, 0.15);
+  color: var(--color-green);
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 600;
+  border: 1px solid rgba(16, 185, 129, 0.2);
+}
+
+.route-badge-drop {
+  display: inline-block;
+  padding: 2px 6px;
+  background-color: rgba(239, 68, 68, 0.15);
+  color: var(--color-red);
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 600;
+  border: 1px solid rgba(239, 68, 68, 0.2);
+}

@@ -241,8 +241,8 @@ class CommandServerManager:
 
         return self._dispatch_command(cmd, payload)
 
-    # pylint: disable=too-many-return-statements
-    def _dispatch_command(self, cmd: str, _payload: Dict[str, Any]) -> Dict[str, Any]:
+    # pylint: disable=too-many-return-statements,too-many-statements,too-many-locals
+    def _dispatch_command(self, cmd: str, payload: Dict[str, Any]) -> Dict[str, Any]:
         """Executes the specific command routine."""
         if cmd == "stats":
             return {
@@ -300,13 +300,72 @@ class CommandServerManager:
                         }
                 return list(merged_dict.values())
 
-            return {
-                "status": "ok",
-                "data": {
-                    "responses": merge_data(db_responses, self.db_buffer_responses),
-                    "queries": merge_data(db_queries, self.db_buffer_queries),
-                },
-            }
+            merged_responses = merge_data(db_responses, self.db_buffer_responses)
+            merged_queries = merge_data(db_queries, self.db_buffer_queries)
+
+            if cmd == "hosts":
+                hosts_aggr: Dict[str, Dict[str, Any]] = {}
+                for record in merged_responses + merged_queries:
+                    ip = record["src_ip"]
+                    if ip not in hosts_aggr:
+                        hosts_aggr[ip] = {
+                            "packets_sent": 0,
+                            "last_interface": record["src_interface"],
+                            "last_seen_time": record["last_seen"],
+                        }
+
+                    entry = hosts_aggr[ip]
+                    entry["packets_sent"] += record["packet_count"]
+                    if record["last_seen"] > entry["last_seen_time"]:
+                        entry["last_seen_time"] = record["last_seen"]
+                        entry["last_interface"] = record["src_interface"]
+                return {"status": "ok", "data": hosts_aggr}
+
+            if cmd == "names":
+
+                def aggregate_names(records: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
+                    names_aggr: Dict[str, Dict[str, Any]] = {}
+                    for r in records:
+                        stype = r["service_type"]
+                        ip = r["src_ip"]
+                        if stype not in names_aggr:
+                            names_aggr[stype] = {}
+                        if ip not in names_aggr[stype]:
+                            names_aggr[stype][ip] = {"packets": 0, "fwd": set(), "drop": set()}
+                        entry = names_aggr[stype][ip]
+                        entry["packets"] += r["packet_count"]
+                        if r["last_forwarded_interfaces"]:
+                            entry["fwd"].update(r["last_forwarded_interfaces"].split(","))
+                        if r["last_dropped_interfaces"]:
+                            entry["drop"].update(r["last_dropped_interfaces"].split(","))
+
+                    # Convert sets to comma-separated strings for JSON serialization
+                    for stype, ips in names_aggr.items():
+                        for ip, info in ips.items():
+                            info["fwd"] = ",".join(sorted(info["fwd"]))
+                            info["drop"] = ",".join(sorted(info["drop"]))
+                    return names_aggr
+
+                return {
+                    "status": "ok",
+                    "data": {
+                        "responses": aggregate_names(merged_responses),
+                        "queries": aggregate_names(merged_queries),
+                    },
+                }
+
+            if cmd == "host_details":
+                target_ip = payload.get("ip")
+                if not target_ip:
+                    return {"status": "error", "error": "Missing 'ip' parameter"}
+
+                return {
+                    "status": "ok",
+                    "data": {
+                        "responses": [r for r in merged_responses if r["src_ip"] == target_ip],
+                        "queries": [r for r in merged_queries if r["src_ip"] == target_ip],
+                    },
+                }
 
         if cmd == "clear":
             self.stats_total = 0

@@ -191,17 +191,11 @@
           </div>
 
           <div class="tabs">
-            <button id="tabFwdQueries" class="tab-btn active" onclick="switchDomainTab('forwarded_queries')">
-              Fwd Queries <span class="badge" id="badgeFwdQueries">0</span>
+            <button id="tabQueries" class="tab-btn active" onclick="switchDomainTab('queries')">
+              Queries <span class="badge" id="badgeQueries">0</span>
             </button>
-            <button id="tabFwdResponses" class="tab-btn" onclick="switchDomainTab('forwarded_responses')">
-              Fwd Responses <span class="badge" id="badgeFwdResponses">0</span>
-            </button>
-            <button id="tabDropQueries" class="tab-btn" onclick="switchDomainTab('dropped_queries')">
-              Drop Queries <span class="badge danger" id="badgeDropQueries">0</span>
-            </button>
-            <button id="tabDropResponses" class="tab-btn" onclick="switchDomainTab('dropped_responses')">
-              Drop Responses <span class="badge danger" id="badgeDropResponses">0</span>
+            <button id="tabResponses" class="tab-btn" onclick="switchDomainTab('responses')">
+              Responses <span class="badge" id="badgeResponses">0</span>
             </button>
           </div>
 
@@ -281,20 +275,30 @@
 
   <!-- Host Details Modal -->
   <div id="hostDetailsModal" class="modal-overlay hidden">
-    <div class="modal-card modal-large">
+    <div class="modal-card modal-large" style="max-width: 800px; width: 90vw;">
       <div class="modal-header">
         <h2 id="hostDetailsTitle">Host Details</h2>
         <button onclick="toggleModal('hostDetailsModal', false)" class="btn btn-icon"><i data-lucide="x"></i></button>
       </div>
       <div class="modal-body">
         <div id="hostDetailsContent" class="host-details-content hidden">
-          <div class="details-column">
-            <h3>Recent Queries</h3>
-            <ul id="hostQueriesList" class="details-list"></ul>
+          <div class="tabs" style="border-bottom: none; margin-bottom: 10px;">
+            <button id="modalTabQueriesBtn" class="tab-btn active" onclick="switchModalTab('queries')">Queries</button>
+            <button id="modalTabResponsesBtn" class="tab-btn" onclick="switchModalTab('responses')">Responses</button>
           </div>
-          <div class="details-column">
-            <h3>Recent Responses</h3>
-            <ul id="hostResponsesList" class="details-list"></ul>
+          <div class="table-container" style="padding: 0; max-height: 400px; overflow-y: auto;">
+            <table class="hosts-table">
+              <thead>
+                <tr>
+                  <th>Domain / Service</th>
+                  <th>Packets</th>
+                  <th>Routing Paths</th>
+                </tr>
+              </thead>
+              <tbody id="hostDetailsTableBody">
+                <!-- Dynamically populated -->
+              </tbody>
+            </table>
           </div>
         </div>
         <div id="hostDetailsEmpty" class="list-empty hidden">No tracking data available for this host. Ensure tracking is enabled in configuration.</div>
