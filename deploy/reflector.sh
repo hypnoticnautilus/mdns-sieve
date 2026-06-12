@@ -2,7 +2,7 @@
 
 set -e
 
-SCRIPT_DIR="$(dirname "$0")"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR=$(dirname "$SCRIPT_DIR")
 
 HOST="$1"
@@ -22,5 +22,5 @@ trap "rm -rf \"$TD\"" EXIT
 "$HOST_PY" -m pip uninstall -y mdns-sieve
 "$HOST_PY" -m pip install -f "$TD2" mdns-sieve
 pkill -fe mdns_sieve.main || true
-nohup "$HOST_PY" -m mdns_sieve.main -c "$HOST_CONFIG" 2>&1 > /var/log/mdns-sieve.log &
+nohup "$HOST_PY" -m mdns_sieve.main -c "$HOST_CONFIG" > /var/log/mdns-sieve.log 2>&1 < /dev/null &
 EOF

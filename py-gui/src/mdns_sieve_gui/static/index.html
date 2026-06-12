@@ -279,6 +279,30 @@
     </div>
   </div>
 
+  <!-- Host Details Modal -->
+  <div id="hostDetailsModal" class="modal-overlay hidden">
+    <div class="modal-card modal-large">
+      <div class="modal-header">
+        <h2 id="hostDetailsTitle">Host Details</h2>
+        <button onclick="toggleModal('hostDetailsModal', false)" class="btn btn-icon"><i data-lucide="x"></i></button>
+      </div>
+      <div class="modal-body">
+        <div id="hostDetailsContent" class="host-details-content hidden">
+          <div class="details-column">
+            <h3>Recent Queries</h3>
+            <ul id="hostQueriesList" class="details-list"></ul>
+          </div>
+          <div class="details-column">
+            <h3>Recent Responses</h3>
+            <ul id="hostResponsesList" class="details-list"></ul>
+          </div>
+        </div>
+        <div id="hostDetailsEmpty" class="list-empty hidden">No tracking data available for this host. Ensure tracking is enabled in configuration.</div>
+        <div id="hostDetailsLoading" class="list-empty hidden">Loading...</div>
+      </div>
+    </div>
+  </div>
+
   <!-- Scripts -->
   <script src="/app.js"></script>
 </body>

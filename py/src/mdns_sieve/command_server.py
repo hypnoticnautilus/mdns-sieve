@@ -18,8 +18,9 @@ logger = logging.getLogger("mdns_sieve.command_server")
 class CommandServerManager:
     """Manages the TCP Command Server socket, client connections, stats, and commands."""
 
-    def __init__(self, config_server: Any) -> None:
+    def __init__(self, config_server: Any, tracking_config: Any = None) -> None:
         self.config_server = config_server
+        self.tracking_config = tracking_config
         self.tcp_listener: Optional[socket.socket] = None
         self.tcp_clients: Dict[socket.socket, bytearray] = {}
 
@@ -33,6 +34,8 @@ class CommandServerManager:
         self.stats_names_forwarded_responses: Dict[str, Dict[str, int]] = {}
         self.stats_names_dropped_queries: Dict[str, Dict[str, int]] = {}
         self.stats_names_dropped_responses: Dict[str, Dict[str, int]] = {}
+        self.stats_host_queries: Dict[str, Dict[str, None]] = {}
+        self.stats_host_responses: Dict[str, Dict[str, None]] = {}
 
     def collect_stats(
         self,
@@ -94,6 +97,25 @@ class CommandServerManager:
                 self.stats_names_dropped_queries[name][src_ip] = (
                     self.stats_names_dropped_queries[name].get(src_ip, 0) + 1
                 )
+
+        if self.tracking_config and self.tracking_config.enabled:
+            max_records = self.tracking_config.max_records
+            if is_response:
+                host_resp = self.stats_host_responses.setdefault(src_ip, {})
+                for name in allowed_names:
+                    if name in host_resp:
+                        host_resp.pop(name)
+                    host_resp[name] = None
+                    if len(host_resp) > max_records:
+                        host_resp.pop(next(iter(host_resp)))
+            else:
+                host_queries = self.stats_host_queries.setdefault(src_ip, {})
+                for name in allowed_names:
+                    if name in host_queries:
+                        host_queries.pop(name)
+                    host_queries[name] = None
+                    if len(host_queries) > max_records:
+                        host_queries.pop(next(iter(host_queries)))
 
     def try_initialize(self) -> None:
         """Initializes the TCP command/statistics listener socket if enabled."""
@@ -187,9 +209,10 @@ class CommandServerManager:
         if not cmd:
             return {"status": "error", "error": "Missing 'command' key"}
 
-        return self._dispatch_command(cmd)
+        return self._dispatch_command(cmd, payload)
 
-    def _dispatch_command(self, cmd: str) -> Dict[str, Any]:
+    # pylint: disable=too-many-return-statements
+    def _dispatch_command(self, cmd: str, payload: Dict[str, Any]) -> Dict[str, Any]:
         """Executes the specific command routine."""
         if cmd == "stats":
             return {
@@ -216,6 +239,19 @@ class CommandServerManager:
                     "dropped_responses": self.stats_names_dropped_responses,
                 },
             }
+        if cmd == "host_details":
+            ip = payload.get("ip")
+            if not ip:
+                return {"status": "error", "error": "Missing 'ip' argument"}
+            queries = list(self.stats_host_queries.get(ip, {}).keys())
+            responses = list(self.stats_host_responses.get(ip, {}).keys())
+            return {
+                "status": "ok",
+                "data": {
+                    "queries": queries,
+                    "responses": responses,
+                },
+            }
         if cmd == "clear":
             self.stats_total = 0
             self.stats_forwarded = 0
@@ -226,6 +262,8 @@ class CommandServerManager:
             self.stats_names_forwarded_responses.clear()
             self.stats_names_dropped_queries.clear()
             self.stats_names_dropped_responses.clear()
+            self.stats_host_queries.clear()
+            self.stats_host_responses.clear()
             return {"status": "ok"}
 
         return {"status": "error", "error": "Unknown command"}

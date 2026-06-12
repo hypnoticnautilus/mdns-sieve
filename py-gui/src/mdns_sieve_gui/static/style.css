@@ -515,8 +515,12 @@ input:checked + .slider:before {
   color: var(--text-primary);
 }
 
+.hosts-table tbody tr {
+  cursor: pointer;
+}
+
 .hosts-table tr:hover td {
-  background-color: rgba(255, 255, 255, 0.01);
+  background-color: rgba(255, 255, 255, 0.05);
 }
 
 .table-empty {
@@ -911,4 +915,47 @@ input:checked + .slider:before {
     border-right: none;
     padding-right: 0;
   }
+}
+
+/* Host Details Modal Styling */
+.modal-large {
+  max-width: 800px;
+}
+
+.host-details-content {
+  display: flex;
+  gap: 24px;
+}
+
+.details-column {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+}
+
+.details-column h3 {
+  margin-top: 0;
+  border-bottom: 1px solid var(--border-color);
+  padding-bottom: 8px;
+  color: var(--text-secondary);
+}
+
+.details-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  max-height: 300px;
+  overflow-y: auto;
+}
+
+.details-list li {
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border-color);
+  font-size: 13px;
+  color: var(--text-primary);
+  font-family: monospace;
+}
+
+.details-list li:last-child {
+  border-bottom: none;
 }

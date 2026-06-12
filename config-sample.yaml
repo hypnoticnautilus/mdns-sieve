@@ -24,6 +24,13 @@ command_server:
   host: "127.0.0.1"
   port: 5354
 
+# Active Host History Tracking (Optional)
+# If enabled, the daemon will keep a bounded history of unique queries and
+# responses seen from each active host. This data is displayed in the GUI modal.
+tracking:
+  enabled: false
+  max_records: 500
+
 # GUI web server for monitoring and managing mDNS Sieve (Optional)
 # Specify the host and port for HTTP clients to connect to the GUI dashboard.
 # The GUI will also connect to the command_server above.

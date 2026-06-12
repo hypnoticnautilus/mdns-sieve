@@ -12,7 +12,8 @@ import logging
 import pkgutil
 import socket
 import sys
-from typing import Dict, Any
+import urllib.parse
+from typing import Dict, Any, Union
 
 import yaml
 
@@ -24,13 +25,16 @@ logging.basicConfig(
 logger = logging.getLogger("mdns_sieve_gui")
 
 
-def query_daemon(host: str, port: int, command: str) -> str:
+def query_daemon(host: str, port: int, command: Union[str, Dict[str, Any]]) -> str:
     """Connects to the daemon TCP command server, sends the command, and returns the response."""
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     sock.settimeout(3.0)
     try:
         sock.connect((host, port))
-        payload = json.dumps({"command": command}).encode("utf-8") + b"\x00"
+        if isinstance(command, dict):
+            payload = json.dumps(command).encode("utf-8") + b"\x00"
+        else:
+            payload = json.dumps({"command": command}).encode("utf-8") + b"\x00"
         sock.sendall(payload)
 
         buffer = bytearray()
@@ -76,15 +80,25 @@ class SieveGUIHandler(BaseHTTPRequestHandler):
 
     def do_GET(self) -> None:
         """Handles HTTP GET requests."""
-        if self.path in ("/", "/index.html"):
+        parsed_path = urllib.parse.urlparse(self.path)
+        path = parsed_path.path
+
+        if path in ("/", "/index.html"):
             self._serve_asset("static/index.html", "text/html; charset=utf-8")
-        elif self.path == "/style.css":
+        elif path == "/style.css":
             self._serve_asset("static/style.css", "text/css; charset=utf-8")
-        elif self.path == "/app.js":
+        elif path == "/app.js":
             self._serve_asset("static/app.js", "application/javascript; charset=utf-8")
-        elif self.path in ("/api/stats", "/api/hosts", "/api/names"):
-            cmd = self.path.split("/")[-1]
+        elif path in ("/api/stats", "/api/hosts", "/api/names"):
+            cmd = path.split("/")[-1]
             self._handle_api_command(cmd)
+        elif path == "/api/host_details":
+            query = urllib.parse.parse_qs(parsed_path.query)
+            ip = query.get("ip", [""])[0]
+            if not ip:
+                self._send_json({"status": "error", "error": "Missing ip parameter"}, 400)
+                return
+            self._handle_api_command({"command": "host_details", "ip": ip})
         else:
             self._send_json({"status": "error", "error": "Not Found"}, 404)
 
@@ -110,7 +124,7 @@ class SieveGUIHandler(BaseHTTPRequestHandler):
         except OSError:
             self._send_json({"status": "error", "error": "Asset read error"}, 500)
 
-    def _handle_api_command(self, cmd: str) -> None:
+    def _handle_api_command(self, cmd: Union[str, Dict[str, Any]]) -> None:
         """Proxies API command calls directly to the daemon's TCP server."""
         try:
             host = self.server.daemon_host  # type: ignore[attr-defined]

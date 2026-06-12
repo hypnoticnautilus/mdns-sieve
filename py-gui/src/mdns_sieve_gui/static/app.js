@@ -54,6 +54,15 @@ window.addEventListener('DOMContentLoaded', () => {
   if (autoRefreshToggle.checked) {
     startAutoRefresh();
   }
+
+  // Setup Modal Background Click Listeners
+  document.querySelectorAll('.modal-overlay').forEach(overlay => {
+    overlay.addEventListener('click', (e) => {
+      if (e.target === overlay) {
+        toggleModal(overlay.id, false);
+      }
+    });
+  });
 });
 
 /* ==========================================================================
@@ -352,6 +361,7 @@ function renderHostsTable() {
     }
 
     const tr = document.createElement('tr');
+    tr.onclick = () => showHostDetails(ip);
     tr.innerHTML = `
       <td><strong>${ip}</strong></td>
       <td><code>${info.last_interface}</code></td>
@@ -710,5 +720,59 @@ async function confirmClearStats() {
     }
   } catch (err) {
     alert(`Failed to clear statistics: ${err.message}`);
+  }
+}
+
+/* ==========================================================================
+   Host Details Modal Action Handler
+   ========================================================================== */
+async function showHostDetails(ip) {
+  document.getElementById('hostDetailsTitle').textContent = `Host Details: ${ip}`;
+  
+  const content = document.getElementById('hostDetailsContent');
+  const empty = document.getElementById('hostDetailsEmpty');
+  const loading = document.getElementById('hostDetailsLoading');
+  
+  content.classList.add('hidden');
+  empty.classList.add('hidden');
+  loading.classList.remove('hidden');
+  
+  toggleModal('hostDetailsModal', true);
+  
+  try {
+    const res = await fetchApi(`/api/host_details?ip=${encodeURIComponent(ip)}`);
+    const queries = res.data.queries || [];
+    const responses = res.data.responses || [];
+    
+    loading.classList.add('hidden');
+    
+    if (queries.length === 0 && responses.length === 0) {
+      empty.textContent = 'No tracking data available for this host. Ensure tracking is enabled in configuration.';
+      empty.classList.remove('hidden');
+    } else {
+      content.classList.remove('hidden');
+      
+      const qList = document.getElementById('hostQueriesList');
+      qList.innerHTML = '';
+      queries.forEach(q => {
+        const li = document.createElement('li');
+        li.textContent = q;
+        qList.appendChild(li);
+      });
+      if (queries.length === 0) qList.innerHTML = '<li style="color: var(--text-muted)">None recorded</li>';
+      
+      const rList = document.getElementById('hostResponsesList');
+      rList.innerHTML = '';
+      responses.forEach(r => {
+        const li = document.createElement('li');
+        li.textContent = r;
+        rList.appendChild(li);
+      });
+      if (responses.length === 0) rList.innerHTML = '<li style="color: var(--text-muted)">None recorded</li>';
+    }
+  } catch (err) {
+    loading.classList.add('hidden');
+    empty.textContent = 'Error fetching host details: ' + err.message;
+    empty.classList.remove('hidden');
   }
 }

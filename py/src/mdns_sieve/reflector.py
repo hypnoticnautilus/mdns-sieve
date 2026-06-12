@@ -39,7 +39,10 @@ class MdnsReflector:
         self.retry_interval: float = 10.0  # Seconds between reconnection retries
         self.running: bool = False
 
-        self.command_server = CommandServerManager(config.command_server)
+        self.command_server = CommandServerManager(
+            config.command_server,
+            tracking_config=config.tracking,
+        )
 
     @property
     def stats_total(self) -> int:

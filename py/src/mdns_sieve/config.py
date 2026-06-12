@@ -102,6 +102,14 @@ class CommandServerConfig:
 
 
 @dataclass
+class TrackingConfig:
+    """Represents the configuration for tracking host-specific history."""
+
+    enabled: bool
+    max_records: int
+
+
+@dataclass
 class AppConfig:
     """Represents the global application configuration."""
 
@@ -109,6 +117,7 @@ class AppConfig:
     default_action: str  # "forward" or "drop"
     rewrite_mixed_packets: bool = False
     command_server: Optional[CommandServerConfig] = None
+    tracking: Optional[TrackingConfig] = None
     rules: List[FilterRule] = field(default_factory=list)
 
     def should_forward(
@@ -235,6 +244,7 @@ def _parse_rule(idx: int, r: Dict[str, Any], interfaces: List[str]) -> FilterRul
     )
 
 
+# pylint: disable=too-many-statements
 def load_config(config_path: str) -> AppConfig:
     """
     Parses and thoroughly validates a yaml configuration file.
@@ -285,6 +295,20 @@ def load_config(config_path: str) -> AppConfig:
             raise ConfigurationError("'command_server.port' must be an integer between 1 and 65535")
         command_server = CommandServerConfig(enabled=enabled, host=host, port=port)
 
+    # Validate tracking
+    tracking = None
+    raw_tracking = raw_data.get("tracking")
+    if raw_tracking is not None:
+        if not isinstance(raw_tracking, dict):
+            raise ConfigurationError("'tracking' must be a dictionary")
+        enabled = raw_tracking.get("enabled", False)
+        if not isinstance(enabled, bool):
+            raise ConfigurationError("'tracking.enabled' must be a boolean")
+        max_records = raw_tracking.get("max_records", 500)
+        if not isinstance(max_records, int) or max_records <= 0:
+            raise ConfigurationError("'tracking.max_records' must be a positive integer")
+        tracking = TrackingConfig(enabled=enabled, max_records=max_records)
+
     # Validate and parse rules
     raw_rules = raw_data.get("rules", [])
     if not isinstance(raw_rules, list):
@@ -299,5 +323,6 @@ def load_config(config_path: str) -> AppConfig:
         default_action=default_action,
         rewrite_mixed_packets=rewrite_mixed_packets,
         command_server=command_server,
+        tracking=tracking,
         rules=rules,
     )
