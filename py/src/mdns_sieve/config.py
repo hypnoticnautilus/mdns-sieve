@@ -107,6 +107,9 @@ class TrackingConfig:
 
     enabled: bool
     max_records: int
+    db_path: str = "/var/lib/mdns-sieve/responses.db"
+    flush_interval_seconds: int = 3600
+    retention_days: int = 7
 
 
 @dataclass
@@ -307,7 +310,22 @@ def load_config(config_path: str) -> AppConfig:
         max_records = raw_tracking.get("max_records", 500)
         if not isinstance(max_records, int) or max_records <= 0:
             raise ConfigurationError("'tracking.max_records' must be a positive integer")
-        tracking = TrackingConfig(enabled=enabled, max_records=max_records)
+        db_path = raw_tracking.get("db_path", "/var/lib/mdns-sieve/responses.db")
+        if not isinstance(db_path, str):
+            raise ConfigurationError("'tracking.db_path' must be a string")
+        flush_interval_seconds = raw_tracking.get("flush_interval_seconds", 3600)
+        if not isinstance(flush_interval_seconds, int) or flush_interval_seconds <= 0:
+            raise ConfigurationError("'tracking.flush_interval_seconds' must be a positive integer")
+        retention_days = raw_tracking.get("retention_days", 7)
+        if not isinstance(retention_days, int) or retention_days <= 0:
+            raise ConfigurationError("'tracking.retention_days' must be a positive integer")
+        tracking = TrackingConfig(
+            enabled=enabled,
+            max_records=max_records,
+            db_path=db_path,
+            flush_interval_seconds=flush_interval_seconds,
+            retention_days=retention_days,
+        )
 
     # Validate and parse rules
     raw_rules = raw_data.get("rules", [])

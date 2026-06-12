@@ -9,7 +9,10 @@ import errno
 import json
 import logging
 import socket
-from typing import Dict, Any, Optional, Set
+import time
+from typing import Dict, Any, Optional, Set, List, Tuple
+
+from mdns_sieve.database import DatabaseManager
 
 logger = logging.getLogger("mdns_sieve.command_server")
 
@@ -37,6 +40,14 @@ class CommandServerManager:
         self.stats_host_queries: Dict[str, Dict[str, None]] = {}
         self.stats_host_responses: Dict[str, Dict[str, None]] = {}
 
+        # Database tracking
+        self.db_manager: Optional[DatabaseManager] = None
+        self.db_buffer_responses: Dict[Tuple[str, str, str], Dict[str, Any]] = {}
+        self.db_buffer_queries: Dict[Tuple[str, str, str], Dict[str, Any]] = {}
+        self.last_flush_time = time.time()
+        if self.tracking_config and self.tracking_config.enabled:
+            self.db_manager = DatabaseManager(self.tracking_config.db_path)
+
     def collect_stats(
         self,
         src_interface: str,
@@ -46,8 +57,10 @@ class CommandServerManager:
         disallowed_names: Set[str],
         timestamp: float,
         is_response: bool = False,
+        forwarded_interfaces: Optional[List[str]] = None,
+        dropped_interfaces: Optional[List[str]] = None,
     ) -> None:
-        # pylint: disable=too-many-branches
+        # pylint: disable=too-many-branches,too-many-arguments,too-many-locals,too-many-statements
         """Collects routing and name statistics."""
         if not self.config_server or not self.config_server.enabled:
             return
@@ -116,6 +129,81 @@ class CommandServerManager:
                     host_queries[name] = None
                     if len(host_queries) > max_records:
                         host_queries.pop(next(iter(host_queries)))
+
+        if self.db_manager:
+            forwarded_str = ",".join(sorted(forwarded_interfaces)) if forwarded_interfaces else ""
+            dropped_str = ",".join(sorted(dropped_interfaces)) if dropped_interfaces else ""
+            buffer = self.db_buffer_responses if is_response else self.db_buffer_queries
+            all_names = allowed_names | disallowed_names
+            for name in all_names:
+                parts = name.split(".")
+                service_type = name
+                for i, part in enumerate(parts):
+                    if part.startswith("_"):
+                        service_type = ".".join(parts[i:])
+                        break
+                key = (src_ip, service_type, src_interface)
+                if key not in buffer:
+                    buffer[key] = {
+                        "first_seen": timestamp,
+                        "last_seen": timestamp,
+                        "packet_count": 1,
+                        "last_forwarded_interfaces": forwarded_str,
+                        "last_dropped_interfaces": dropped_str,
+                    }
+                else:
+                    entry = buffer[key]
+                    entry["last_seen"] = timestamp
+                    entry["packet_count"] += 1
+                    entry["last_forwarded_interfaces"] = forwarded_str
+                    entry["last_dropped_interfaces"] = dropped_str
+
+    def flush_stats(self, force: bool = False) -> None:
+        """Flushes the database memory buffers and prunes old records."""
+        if not self.db_manager or not self.tracking_config:
+            return
+
+        now = time.time()
+        if not force and now - self.last_flush_time < self.tracking_config.flush_interval_seconds:
+            return
+
+        self.last_flush_time = now
+
+        if self.db_buffer_responses:
+            records = [
+                (
+                    key[0],
+                    key[1],
+                    key[2],
+                    val["first_seen"],
+                    val["last_seen"],
+                    val["packet_count"],
+                    val["last_forwarded_interfaces"],
+                    val["last_dropped_interfaces"],
+                )
+                for key, val in self.db_buffer_responses.items()
+            ]
+            self.db_manager.batch_upsert("responses", records)
+            self.db_buffer_responses.clear()
+
+        if self.db_buffer_queries:
+            records = [
+                (
+                    key[0],
+                    key[1],
+                    key[2],
+                    val["first_seen"],
+                    val["last_seen"],
+                    val["packet_count"],
+                    val["last_forwarded_interfaces"],
+                    val["last_dropped_interfaces"],
+                )
+                for key, val in self.db_buffer_queries.items()
+            ]
+            self.db_manager.batch_upsert("queries", records)
+            self.db_buffer_queries.clear()
+
+        self.db_manager.prune_old_records(self.tracking_config.retention_days)
 
     def try_initialize(self) -> None:
         """Initializes the TCP command/statistics listener socket if enabled."""

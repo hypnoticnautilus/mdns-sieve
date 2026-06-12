@@ -11,7 +11,7 @@ import select
 import socket
 import struct
 import time
-from typing import Dict, Set, Any, Optional
+from typing import Dict, Set, Any, Optional, List
 
 # Only import fcntl on UNIX platforms to keep static tools/type checkers happy
 try:
@@ -282,6 +282,9 @@ class MdnsReflector:
         is_rewritten_any = False
         dest_count = 0
 
+        forwarded_interfaces: List[str] = []
+        dropped_interfaces: List[str] = []
+
         all_pkt_names = q_names | a_names
         allowed_names_packet: Set[str] = set()
         disallowed_names_packet: Set[str] = set()
@@ -327,6 +330,7 @@ class MdnsReflector:
 
                 if kept_q == 0 and kept_a == 0:
                     disallowed_names_packet.update(all_pkt_names)
+                    dropped_interfaces.append(dst_interface)
                     logger.debug(
                         "Dropped mDNS packet from %s -> %s for names: %s",
                         src_interface,
@@ -336,6 +340,7 @@ class MdnsReflector:
                 elif stripped_q == 0 and stripped_a == 0:
                     allowed_names_packet.update(all_pkt_names)
                     is_forwarded_any = True
+                    forwarded_interfaces.append(dst_interface)
                     logger.debug(
                         "Forwarding mDNS packet (%d bytes) from %s -> %s for names: %s",
                         len(data),
@@ -359,6 +364,7 @@ class MdnsReflector:
                     allowed_names_packet.update(kept_names)
                     disallowed_names_packet.update(stripped_names)
                     is_rewritten_any = True
+                    forwarded_interfaces.append(dst_interface)
 
                     rewritten_packet = DNSPacket(
                         transaction_id=packet.transaction_id,
@@ -401,6 +407,7 @@ class MdnsReflector:
                 if self.config.should_forward(src_interface, dst_interface, q_names, a_names):
                     allowed_names_packet.update(all_pkt_names)
                     is_forwarded_any = True
+                    forwarded_interfaces.append(dst_interface)
                     logger.debug(
                         "Forwarding mDNS packet (%d bytes) from %s -> %s for names: %s",
                         len(data),
@@ -416,6 +423,7 @@ class MdnsReflector:
                             self.mark_interface_offline(dst_interface)
                 else:
                     disallowed_names_packet.update(all_pkt_names)
+                    dropped_interfaces.append(dst_interface)
                     is_mixed = False
                     if q_names and a_names:
                         q_forward = self.config.should_forward(
@@ -460,6 +468,8 @@ class MdnsReflector:
             allowed_names_packet,
             disallowed_names_packet,
             packet.is_response,
+            forwarded_interfaces,
+            dropped_interfaces,
         )
 
     def _collect_stats(
@@ -470,6 +480,8 @@ class MdnsReflector:
         allowed_names: Set[str],
         disallowed_names: Set[str],
         is_response: bool = False,
+        forwarded_interfaces: Optional[List[str]] = None,
+        dropped_interfaces: Optional[List[str]] = None,
     ) -> None:
         """Helper to collect routing and name statistics for the command server."""
         self.command_server.collect_stats(
@@ -480,6 +492,8 @@ class MdnsReflector:
             disallowed_names,
             time.time(),
             is_response,
+            forwarded_interfaces,
+            dropped_interfaces,
         )
 
     def try_initialize_command_server(self) -> None:
@@ -504,6 +518,7 @@ class MdnsReflector:
         logger.info("mDNS Sieve Reflector is active.")
         while self.running:
             now = time.time()
+            self.command_server.flush_stats()
             if now - self.last_retry_time >= self.retry_interval:
                 self.try_initialize_command_server()
                 self.try_initialize_interfaces()
@@ -585,6 +600,9 @@ class MdnsReflector:
         """Stops the event loop and cleans up open sockets."""
         self.running = False
         logger.info("Stopping reflector and releasing sockets...")
+
+        # Force a database flush on shutdown to avoid data loss
+        self.command_server.flush_stats(force=True)
 
         # Clean up TCP listener & clients
         self.command_server.stop()
