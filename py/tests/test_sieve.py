@@ -19,6 +19,7 @@ from mdns_sieve.config import (
     FilterRule,
     RuleSection,
     CommandServerConfig,
+    TrackingConfig,
 )
 from mdns_sieve.mdns_parser import (
     parse_mdns_packet,
@@ -777,6 +778,13 @@ rules: []
             interfaces=["eth0", "eth1"],
             default_action="drop",
             command_server=CommandServerConfig(enabled=True, host="127.0.0.1", port=0),
+            tracking=TrackingConfig(
+                enabled=True,
+                max_records=500,
+                db_path=":memory:",
+                flush_interval_seconds=3600,
+                retention_days=7,
+            ),
             rules=[],
         )
         ref_enabled = MdnsReflector(config_enabled)
@@ -786,28 +794,20 @@ rules: []
         ref_enabled.handle_packet("eth0", q_packet, "192.168.1.100")
         self.assertEqual(ref_enabled.stats_total, 1)
         self.assertEqual(ref_enabled.stats_dropped, 1)
-        self.assertIn("192.168.1.100", ref_enabled.stats_hosts)
-        host_info = ref_enabled.stats_hosts["192.168.1.100"]
-        self.assertEqual(host_info["packets_sent"], 1)
-        self.assertEqual(host_info["last_interface"], "eth0")
-
-        # Verify nested names allowed and disallowed by IP
-        self.assertIn("local", ref_enabled.stats_names_dropped_queries)
-        self.assertEqual(ref_enabled.stats_names_dropped_queries["local"]["192.168.1.100"], 1)
+        key = ("192.168.1.100", "local", "eth0")
+        self.assertIn(key, ref_enabled.command_server.db_buffer_queries)
+        entry = ref_enabled.command_server.db_buffer_queries[key]
+        self.assertEqual(entry["packet_count"], 1)
 
     def test_clear_command(self) -> None:
         """Verifies that the clear command resets statistics."""
         config = AppConfig(interfaces=["eth0"], default_action="drop", rules=[])
         reflector = MdnsReflector(config)
-        reflector.stats_total = 5
-        reflector.stats_hosts = {"192.168.1.50": {"packets_sent": 2}}
-        reflector.stats_names_forwarded_queries = {"test.local": {"192.168.1.50": 1}}
+        reflector.command_server.stats_total = 5
 
         resp = reflector._process_command(b'{"command": "clear"}')
         self.assertEqual(resp["status"], "ok")
-        self.assertEqual(reflector.stats_total, 0)
-        self.assertEqual(len(reflector.stats_hosts), 0)
-        self.assertEqual(len(reflector.stats_names_forwarded_queries), 0)
+        self.assertEqual(reflector.command_server.stats_total, 0)
 
     def test_command_server_integration(self) -> None:
         """Tests TCP socket connection, JSON command processing, and buffer limits."""
@@ -826,9 +826,9 @@ rules: []
         port = reflector.tcp_listener.getsockname()[1]
 
         # Mock stats
-        reflector.stats_total = 10
-        reflector.stats_forwarded = 7
-        reflector.stats_dropped = 3
+        reflector.command_server.stats_total = 10
+        reflector.command_server.stats_forwarded = 7
+        reflector.command_server.stats_dropped = 3
 
         # Connect client socket
         client = socket.socket(socket.AF_INET, socket.SOCK_STREAM)

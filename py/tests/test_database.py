@@ -74,3 +74,20 @@ def test_invalid_table_upsert():
         records = [("192.168.1.10", "_http._tcp.local", "eth0", now, now, 1, "eth1", "eth2")]
         # Should log an error but not crash
         db.batch_upsert("invalid_table", records)
+
+
+def test_global_stats():
+    """Test saving and loading global stats."""
+    with tempfile.NamedTemporaryFile() as tmp:
+        db = DatabaseManager(tmp.name)
+
+        # Initial state should be zeros
+        assert db.load_global_stats() == (0, 0, 0, 0)
+
+        # Save and load
+        db.save_global_stats(10, 5, 3, 2)
+        assert db.load_global_stats() == (10, 5, 3, 2)
+
+        # Update and load
+        db.save_global_stats(20, 15, 3, 2)
+        assert db.load_global_stats() == (20, 15, 3, 2)

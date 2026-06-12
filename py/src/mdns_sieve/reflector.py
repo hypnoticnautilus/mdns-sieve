@@ -85,56 +85,6 @@ class MdnsReflector:
         self.command_server.stats_rewritten = val
 
     @property
-    def stats_hosts(self) -> Dict[str, Dict[str, Any]]:
-        """Gets the host-specific packet metadata dictionary."""
-        return self.command_server.stats_hosts
-
-    @stats_hosts.setter
-    def stats_hosts(self, val: Dict[str, Dict[str, Any]]) -> None:
-        """Sets the host-specific packet metadata dictionary."""
-        self.command_server.stats_hosts = val
-
-    @property
-    def stats_names_forwarded_queries(self) -> Dict[str, Dict[str, int]]:
-        """Gets stats for forwarded queries."""
-        return self.command_server.stats_names_forwarded_queries
-
-    @stats_names_forwarded_queries.setter
-    def stats_names_forwarded_queries(self, val: Dict[str, Dict[str, int]]) -> None:
-        """Sets stats for forwarded queries."""
-        self.command_server.stats_names_forwarded_queries = val
-
-    @property
-    def stats_names_forwarded_responses(self) -> Dict[str, Dict[str, int]]:
-        """Gets stats for forwarded responses."""
-        return self.command_server.stats_names_forwarded_responses
-
-    @stats_names_forwarded_responses.setter
-    def stats_names_forwarded_responses(self, val: Dict[str, Dict[str, int]]) -> None:
-        """Sets stats for forwarded responses."""
-        self.command_server.stats_names_forwarded_responses = val
-
-    @property
-    def stats_names_dropped_queries(self) -> Dict[str, Dict[str, int]]:
-        """Gets stats for dropped queries."""
-        return self.command_server.stats_names_dropped_queries
-
-    @stats_names_dropped_queries.setter
-    def stats_names_dropped_queries(self, val: Dict[str, Dict[str, int]]) -> None:
-        """Sets stats for dropped queries."""
-        self.command_server.stats_names_dropped_queries = val
-
-    @property
-    def stats_names_dropped_responses(self) -> Dict[str, Dict[str, int]]:
-        """Gets stats for dropped responses."""
-        return self.command_server.stats_names_dropped_responses
-
-    @stats_names_dropped_responses.setter
-    def stats_names_dropped_responses(self, val: Dict[str, Dict[str, int]]) -> None:
-        """Sets stats for dropped responses."""
-        self.command_server.stats_names_dropped_responses = val
-
-    @property
     def tcp_listener(self) -> Optional[socket.socket]:
         """Gets the TCP command server listener socket."""
         return self.command_server.tcp_listener

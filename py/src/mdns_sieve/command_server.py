@@ -32,13 +32,6 @@ class CommandServerManager:
         self.stats_forwarded: int = 0
         self.stats_dropped: int = 0
         self.stats_rewritten: int = 0
-        self.stats_hosts: Dict[str, Dict[str, Any]] = {}
-        self.stats_names_forwarded_queries: Dict[str, Dict[str, int]] = {}
-        self.stats_names_forwarded_responses: Dict[str, Dict[str, int]] = {}
-        self.stats_names_dropped_queries: Dict[str, Dict[str, int]] = {}
-        self.stats_names_dropped_responses: Dict[str, Dict[str, int]] = {}
-        self.stats_host_queries: Dict[str, Dict[str, None]] = {}
-        self.stats_host_responses: Dict[str, Dict[str, None]] = {}
 
         # Database tracking
         self.db_manager: Optional[DatabaseManager] = None
@@ -47,6 +40,9 @@ class CommandServerManager:
         self.last_flush_time = time.time()
         if self.tracking_config and self.tracking_config.enabled:
             self.db_manager = DatabaseManager(self.tracking_config.db_path)
+            self.stats_total, self.stats_forwarded, self.stats_dropped, self.stats_rewritten = (
+                self.db_manager.load_global_stats()
+            )
 
     def collect_stats(
         self,
@@ -72,63 +68,6 @@ class CommandServerManager:
             self.stats_dropped += 1
         elif action == "rewritten":
             self.stats_rewritten += 1
-
-        if src_ip not in self.stats_hosts:
-            self.stats_hosts[src_ip] = {
-                "packets_sent": 0,
-                "last_interface": src_interface,
-                "last_seen_time": 0.0,
-            }
-        host_info = self.stats_hosts[src_ip]
-        host_info["packets_sent"] += 1
-        host_info["last_interface"] = src_interface
-        host_info["last_seen_time"] = timestamp
-
-        if is_response:
-            for name in allowed_names:
-                if name not in self.stats_names_forwarded_responses:
-                    self.stats_names_forwarded_responses[name] = {}
-                self.stats_names_forwarded_responses[name][src_ip] = (
-                    self.stats_names_forwarded_responses[name].get(src_ip, 0) + 1
-                )
-            for name in disallowed_names:
-                if name not in self.stats_names_dropped_responses:
-                    self.stats_names_dropped_responses[name] = {}
-                self.stats_names_dropped_responses[name][src_ip] = (
-                    self.stats_names_dropped_responses[name].get(src_ip, 0) + 1
-                )
-        else:
-            for name in allowed_names:
-                if name not in self.stats_names_forwarded_queries:
-                    self.stats_names_forwarded_queries[name] = {}
-                self.stats_names_forwarded_queries[name][src_ip] = (
-                    self.stats_names_forwarded_queries[name].get(src_ip, 0) + 1
-                )
-            for name in disallowed_names:
-                if name not in self.stats_names_dropped_queries:
-                    self.stats_names_dropped_queries[name] = {}
-                self.stats_names_dropped_queries[name][src_ip] = (
-                    self.stats_names_dropped_queries[name].get(src_ip, 0) + 1
-                )
-
-        if self.tracking_config and self.tracking_config.enabled:
-            max_records = self.tracking_config.max_records
-            if is_response:
-                host_resp = self.stats_host_responses.setdefault(src_ip, {})
-                for name in allowed_names:
-                    if name in host_resp:
-                        host_resp.pop(name)
-                    host_resp[name] = None
-                    if len(host_resp) > max_records:
-                        host_resp.pop(next(iter(host_resp)))
-            else:
-                host_queries = self.stats_host_queries.setdefault(src_ip, {})
-                for name in allowed_names:
-                    if name in host_queries:
-                        host_queries.pop(name)
-                    host_queries[name] = None
-                    if len(host_queries) > max_records:
-                        host_queries.pop(next(iter(host_queries)))
 
         if self.db_manager:
             forwarded_str = ",".join(sorted(forwarded_interfaces)) if forwarded_interfaces else ""
@@ -203,6 +142,9 @@ class CommandServerManager:
             self.db_manager.batch_upsert("queries", records)
             self.db_buffer_queries.clear()
 
+        self.db_manager.save_global_stats(
+            self.stats_total, self.stats_forwarded, self.stats_dropped, self.stats_rewritten
+        )
         self.db_manager.prune_old_records(self.tracking_config.retention_days)
 
     def try_initialize(self) -> None:
@@ -300,7 +242,7 @@ class CommandServerManager:
         return self._dispatch_command(cmd, payload)
 
     # pylint: disable=too-many-return-statements
-    def _dispatch_command(self, cmd: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+    def _dispatch_command(self, cmd: str, _payload: Dict[str, Any]) -> Dict[str, Any]:
         """Executes the specific command routine."""
         if cmd == "stats":
             return {
@@ -312,46 +254,67 @@ class CommandServerManager:
                     "rewritten": self.stats_rewritten,
                 },
             }
-        if cmd == "hosts":
-            return {
-                "status": "ok",
-                "data": self.stats_hosts,
-            }
-        if cmd == "names":
+
+        if cmd in ("hosts", "names", "host_details"):
+            if not self.db_manager:
+                return {"status": "error", "error": "Database tracking is disabled"}
+
+            # Fetch all DB records
+            db_responses = self.db_manager.fetch_records("responses")
+            db_queries = self.db_manager.fetch_records("queries")
+
+            def merge_data(
+                db_rows: List[Tuple[Any, ...]], buffer: Dict[Tuple[str, str, str], Dict[str, Any]]
+            ) -> List[Dict[str, Any]]:
+                merged_dict = {}
+                for row in db_rows:
+                    key = (row[0], row[1], row[2])
+                    merged_dict[key] = {
+                        "src_ip": row[0],
+                        "service_type": row[1],
+                        "src_interface": row[2],
+                        "first_seen": row[3],
+                        "last_seen": row[4],
+                        "packet_count": row[5],
+                        "last_forwarded_interfaces": row[6],
+                        "last_dropped_interfaces": row[7],
+                    }
+                for bkey, bval in buffer.items():
+                    if bkey in merged_dict:
+                        entry = merged_dict[bkey]
+                        entry["first_seen"] = min(entry["first_seen"], bval["first_seen"])
+                        entry["last_seen"] = max(entry["last_seen"], bval["last_seen"])
+                        entry["packet_count"] += bval["packet_count"]
+                        entry["last_forwarded_interfaces"] = bval["last_forwarded_interfaces"]
+                        entry["last_dropped_interfaces"] = bval["last_dropped_interfaces"]
+                    else:
+                        merged_dict[bkey] = {
+                            "src_ip": bkey[0],
+                            "service_type": bkey[1],
+                            "src_interface": bkey[2],
+                            "first_seen": bval["first_seen"],
+                            "last_seen": bval["last_seen"],
+                            "packet_count": bval["packet_count"],
+                            "last_forwarded_interfaces": bval["last_forwarded_interfaces"],
+                            "last_dropped_interfaces": bval["last_dropped_interfaces"],
+                        }
+                return list(merged_dict.values())
+
             return {
                 "status": "ok",
                 "data": {
-                    "forwarded_queries": self.stats_names_forwarded_queries,
-                    "forwarded_responses": self.stats_names_forwarded_responses,
-                    "dropped_queries": self.stats_names_dropped_queries,
-                    "dropped_responses": self.stats_names_dropped_responses,
+                    "responses": merge_data(db_responses, self.db_buffer_responses),
+                    "queries": merge_data(db_queries, self.db_buffer_queries),
                 },
             }
-        if cmd == "host_details":
-            ip = payload.get("ip")
-            if not ip:
-                return {"status": "error", "error": "Missing 'ip' argument"}
-            queries = list(self.stats_host_queries.get(ip, {}).keys())
-            responses = list(self.stats_host_responses.get(ip, {}).keys())
-            return {
-                "status": "ok",
-                "data": {
-                    "queries": queries,
-                    "responses": responses,
-                },
-            }
+
         if cmd == "clear":
             self.stats_total = 0
             self.stats_forwarded = 0
             self.stats_dropped = 0
             self.stats_rewritten = 0
-            self.stats_hosts.clear()
-            self.stats_names_forwarded_queries.clear()
-            self.stats_names_forwarded_responses.clear()
-            self.stats_names_dropped_queries.clear()
-            self.stats_names_dropped_responses.clear()
-            self.stats_host_queries.clear()
-            self.stats_host_responses.clear()
+            if self.db_manager:
+                self.db_manager.save_global_stats(0, 0, 0, 0)
             return {"status": "ok"}
 
         return {"status": "error", "error": "Unknown command"}

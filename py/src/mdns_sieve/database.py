@@ -61,6 +61,13 @@ class DatabaseManager:
                         last_dropped_interfaces TEXT,
                         PRIMARY KEY (src_ip, service_type, src_interface)
                     );
+                    CREATE TABLE IF NOT EXISTS global_stats (
+                        id INTEGER PRIMARY KEY CHECK (id = 1),
+                        total INTEGER,
+                        forwarded INTEGER,
+                        dropped INTEGER,
+                        rewritten INTEGER
+                    );
                 """
                 conn.executescript(schema)
         except sqlite3.Error as e:
@@ -106,3 +113,51 @@ class DatabaseManager:
                 conn.execute("DELETE FROM queries WHERE last_seen < ?", (threshold,))
         except sqlite3.Error as e:
             logger.error("Failed to prune old records: %s", e)
+
+    def save_global_stats(self, total: int, forwarded: int, dropped: int, rewritten: int) -> None:
+        """Saves the global packet counters to the database."""
+        try:
+            with self._get_connection() as conn:
+                conn.execute(
+                    """
+                    INSERT INTO global_stats (id, total, forwarded, dropped, rewritten)
+                    VALUES (1, ?, ?, ?, ?)
+                    ON CONFLICT(id) DO UPDATE SET
+                        total = excluded.total,
+                        forwarded = excluded.forwarded,
+                        dropped = excluded.dropped,
+                        rewritten = excluded.rewritten;
+                    """,
+                    (total, forwarded, dropped, rewritten),
+                )
+        except sqlite3.Error as e:
+            logger.error("Failed to save global stats: %s", e)
+
+    def load_global_stats(self) -> Tuple[int, int, int, int]:
+        """Loads the global packet counters from the database."""
+        try:
+            with self._get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    "SELECT total, forwarded, dropped, rewritten FROM global_stats WHERE id = 1"
+                )
+                row = cursor.fetchone()
+                if row:
+                    return int(row[0]), int(row[1]), int(row[2]), int(row[3])
+        except sqlite3.Error as e:
+            logger.error("Failed to load global stats: %s", e)
+        return 0, 0, 0, 0
+
+    def fetch_records(self, table_name: str) -> List[Tuple[Any, ...]]:
+        """Fetches all records from the specified table."""
+        if table_name not in ("responses", "queries"):
+            logger.error("Invalid table name: %s", table_name)
+            return []
+        try:
+            with self._get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute(f"SELECT * FROM {table_name}")
+                return cursor.fetchall()
+        except sqlite3.Error as e:
+            logger.error("Failed to fetch records from %s: %s", table_name, e)
+            return []
