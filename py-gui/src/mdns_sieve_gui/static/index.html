@@ -160,6 +160,12 @@
           <div class="card-header">
             <h2>Active Hosts</h2>
             <span class="card-subtitle">Source devices seen transmitting mDNS traffic across reflector interfaces.</span>
+            <div class="card-search-row">
+              <div class="search-input-wrapper">
+                <i data-lucide="search" class="search-icon"></i>
+                <input type="text" id="hostSearch" placeholder="Filter hosts by IP or interface..." oninput="filterHosts()">
+              </div>
+            </div>
           </div>
           <div class="table-container">
             <table class="hosts-table">
@@ -186,9 +192,19 @@
           <div class="card-header">
             <h2>Queried Domains Explorer</h2>
             <span class="card-subtitle">Discovery queries and responses matching rule criteria.</span>
-            <div class="search-box">
-              <i data-lucide="search" class="search-icon"></i>
-              <input type="text" id="domainSearch" placeholder="Filter domain names..." oninput="filterDomains()">
+            <div class="card-search-row">
+              <div class="search-input-wrapper">
+                <i data-lucide="search" class="search-icon"></i>
+                <input type="text" id="domainSearch" placeholder="Filter domain names..." oninput="filterDomains()">
+              </div>
+              <select id="domainInterfaceFilter" onchange="filterDomains()" class="filter-select">
+                <option value="">All Interfaces</option>
+              </select>
+              <select id="domainStatusFilter" onchange="filterDomains()" class="filter-select">
+                <option value="">All Actions</option>
+                <option value="fwd">Forwarded</option>
+                <option value="drop">Dropped</option>
+              </select>
             </div>
           </div>
 

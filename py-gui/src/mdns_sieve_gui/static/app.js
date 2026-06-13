@@ -292,11 +292,25 @@ function setHostsSort(col) {
   renderHostsTable();
 }
 
+function filterHosts() {
+  renderHostsTable();
+}
+
 function renderHostsTable() {
   const tbody = document.getElementById('hostsTableBody');
   if (!tbody) return;
 
-  const hosts = Object.entries(latestHostsData);
+  const queryInput = document.getElementById('hostSearch');
+  const query = queryInput ? queryInput.value.toLowerCase().trim() : '';
+
+  let hosts = Object.entries(latestHostsData);
+  if (query) {
+    hosts = hosts.filter(([ip, info]) => {
+      const matchIp = ip.toLowerCase().includes(query);
+      const matchIface = info.last_interface && info.last_interface.toLowerCase().includes(query);
+      return matchIp || matchIface;
+    });
+  }
   
   // Update sort icons in table headers
   const cols = ['ip', 'interface', 'packets', 'status', 'last_seen'];
@@ -314,7 +328,7 @@ function renderHostsTable() {
   });
 
   if (hosts.length === 0) {
-    tbody.innerHTML = `<tr><td colspan="5" class="table-empty">No active hosts discovered.</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="5" class="table-empty">${query ? 'No matching hosts discovered.' : 'No active hosts discovered.'}</td></tr>`;
     return;
   }
 
@@ -398,6 +412,41 @@ function updateDomains(data) {
   document.getElementById('badgeQueries').textContent = Object.keys(queriesCache).length;
   document.getElementById('badgeResponses').textContent = Object.keys(responsesCache).length;
 
+  // Extract all unique interfaces
+  const interfaces = new Set();
+  [queriesCache, responsesCache].forEach(cache => {
+    Object.values(cache).forEach(ipData => {
+      Object.values(ipData).forEach(info => {
+        if (info.fwd) {
+          info.fwd.split(',').forEach(iface => {
+            if (iface.trim()) interfaces.add(iface.trim());
+          });
+        }
+        if (info.drop) {
+          info.drop.split(',').forEach(iface => {
+            if (iface.trim()) interfaces.add(iface.trim());
+          });
+        }
+      });
+    });
+  });
+
+  const select = document.getElementById('domainInterfaceFilter');
+  if (select) {
+    const currentValue = select.value;
+    select.innerHTML = '<option value="">All Interfaces</option>';
+    const sortedInterfaces = Array.from(interfaces).sort();
+    sortedInterfaces.forEach(iface => {
+      const option = document.createElement('option');
+      option.value = iface;
+      option.textContent = iface;
+      if (iface === currentValue) {
+        option.selected = true;
+      }
+      select.appendChild(option);
+    });
+  }
+
   filterDomains();
 }
 
@@ -408,15 +457,52 @@ function switchDomainTab(tab) {
   filterDomains();
 }
 
+function matchesFilters(info, interfaceFilter, statusFilter) {
+  const fwdInterfaces = info.fwd ? info.fwd.split(',').map(x => x.trim()) : [];
+  const dropInterfaces = info.drop ? info.drop.split(',').map(x => x.trim()) : [];
+
+  if (statusFilter === 'fwd') {
+    if (fwdInterfaces.length === 0) return false;
+    if (interfaceFilter && !fwdInterfaces.includes(interfaceFilter)) return false;
+  } else if (statusFilter === 'drop') {
+    if (dropInterfaces.length === 0) return false;
+    if (interfaceFilter && !dropInterfaces.includes(interfaceFilter)) return false;
+  } else {
+    // statusFilter is empty (All Actions)
+    if (interfaceFilter) {
+      const hasInterface = fwdInterfaces.includes(interfaceFilter) || dropInterfaces.includes(interfaceFilter);
+      if (!hasInterface) return false;
+    }
+  }
+  return true;
+}
+
 function filterDomains() {
   const query = document.getElementById('domainSearch').value.toLowerCase().trim();
+  const interfaceFilter = document.getElementById('domainInterfaceFilter') ? document.getElementById('domainInterfaceFilter').value : '';
+  const statusFilter = document.getElementById('domainStatusFilter') ? document.getElementById('domainStatusFilter').value : '';
+  
   const listContainer = document.getElementById('domainList');
   listContainer.innerHTML = '';
 
   const cache = currentTab === 'responses' ? responsesCache : queriesCache;
   const entries = Object.entries(cache);
 
-  const filtered = entries.filter(([name]) => name.toLowerCase().includes(query));
+  const filtered = [];
+  entries.forEach(([name, ipData]) => {
+    if (query && !name.toLowerCase().includes(query)) {
+      return;
+    }
+
+    // Filter the ipData entries based on interface and action/status filters
+    const filteredIpEntries = Object.entries(ipData).filter(([ip, info]) => {
+      return matchesFilters(info, interfaceFilter, statusFilter);
+    });
+
+    if (filteredIpEntries.length > 0) {
+      filtered.push([name, Object.fromEntries(filteredIpEntries)]);
+    }
+  });
 
   if (filtered.length === 0) {
     listContainer.innerHTML = `<div class="list-empty">No matching domain statistics found.</div>`;
@@ -462,12 +548,12 @@ function filterDomains() {
         let badgesHtml = '';
         if (info.fwd) {
            info.fwd.split(',').forEach(iface => {
-               badgesHtml += `<span class="route-badge-fwd" title="Forwarded">Fwd: ${iface}</span>`;
+               badgesHtml += `<span class="route-badge-fwd" title="Forwarded">${iface}</span>`;
            });
         }
         if (info.drop) {
            info.drop.split(',').forEach(iface => {
-               badgesHtml += `<span class="route-badge-drop" title="Dropped">Drop: ${iface}</span>`;
+               badgesHtml += `<span class="route-badge-drop" title="Dropped">${iface}</span>`;
            });
         }
 
@@ -771,12 +857,12 @@ function renderHostDetailsTable() {
     let badgesHtml = '';
     if (r.last_forwarded_interfaces) {
       r.last_forwarded_interfaces.split(',').forEach(iface => {
-        badgesHtml += `<span class="route-badge-fwd" title="Forwarded">Fwd: ${iface}</span>`;
+        badgesHtml += `<span class="route-badge-fwd" title="Forwarded">${iface}</span>`;
       });
     }
     if (r.last_dropped_interfaces) {
       r.last_dropped_interfaces.split(',').forEach(iface => {
-        badgesHtml += `<span class="route-badge-drop" title="Dropped">Drop: ${iface}</span>`;
+        badgesHtml += `<span class="route-badge-drop" title="Dropped">${iface}</span>`;
       });
     }
     
