@@ -1,4 +1,4 @@
-"""Version tracking module."""
+"""Version tracking placeholder module."""
 
-# Generated dynamically during wheel build
-__commit__ = "0db7ddb"
+# This file is dynamically overwritten during wheel builds
+__commit__ = "unknown"
