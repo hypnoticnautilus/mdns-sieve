@@ -364,19 +364,27 @@ class CommandServerManager:
                         if stype not in names_aggr:
                             names_aggr[stype] = {}
                         if ip not in names_aggr[stype]:
-                            names_aggr[stype][ip] = {"packets": 0, "fwd": set(), "drop": set()}
+                            names_aggr[stype][ip] = {
+                                "packets": 0,
+                                "fwd": set(),
+                                "drop": set(),
+                                "src": set(),
+                            }
                         entry = names_aggr[stype][ip]
                         entry["packets"] += r["packet_count"]
                         if r["last_forwarded_interfaces"]:
                             entry["fwd"].update(r["last_forwarded_interfaces"].split(","))
                         if r["last_dropped_interfaces"]:
                             entry["drop"].update(r["last_dropped_interfaces"].split(","))
+                        if r["src_interface"]:
+                            entry["src"].add(r["src_interface"])
 
                     # Convert sets to comma-separated strings for JSON serialization
                     for stype, ips in names_aggr.items():
                         for ip, info in ips.items():
                             info["fwd"] = ",".join(sorted(info["fwd"]))
                             info["drop"] = ",".join(sorted(info["drop"]))
+                            info["src"] = ",".join(sorted(info["src"]))
                     return names_aggr
 
                 return {

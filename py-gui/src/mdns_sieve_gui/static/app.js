@@ -435,13 +435,8 @@ function updateDomains(data) {
   [queriesCache, responsesCache].forEach(cache => {
     Object.values(cache).forEach(ipData => {
       Object.values(ipData).forEach(info => {
-        if (info.fwd) {
-          info.fwd.split(',').forEach(iface => {
-            if (iface.trim()) interfaces.add(iface.trim());
-          });
-        }
-        if (info.drop) {
-          info.drop.split(',').forEach(iface => {
+        if (info.src) {
+          info.src.split(',').forEach(iface => {
             if (iface.trim()) interfaces.add(iface.trim());
           });
         }
@@ -476,22 +471,20 @@ function switchDomainTab(tab) {
 }
 
 function matchesFilters(info, interfaceFilter, statusFilter) {
-  const fwdInterfaces = info.fwd ? info.fwd.split(',').map(x => x.trim()) : [];
-  const dropInterfaces = info.drop ? info.drop.split(',').map(x => x.trim()) : [];
+  const fwdInterfaces = info.fwd ? info.fwd.split(',').map(x => x.trim()).filter(Boolean) : [];
+  const dropInterfaces = info.drop ? info.drop.split(',').map(x => x.trim()).filter(Boolean) : [];
 
   if (statusFilter === 'fwd') {
     if (fwdInterfaces.length === 0) return false;
-    if (interfaceFilter && !fwdInterfaces.includes(interfaceFilter)) return false;
   } else if (statusFilter === 'drop') {
     if (dropInterfaces.length === 0) return false;
-    if (interfaceFilter && !dropInterfaces.includes(interfaceFilter)) return false;
-  } else {
-    // statusFilter is empty (All Actions)
-    if (interfaceFilter) {
-      const hasInterface = fwdInterfaces.includes(interfaceFilter) || dropInterfaces.includes(interfaceFilter);
-      if (!hasInterface) return false;
-    }
   }
+
+  if (interfaceFilter) {
+    const srcInterfaces = info.src ? info.src.split(',').map(x => x.trim()).filter(Boolean) : [];
+    if (!srcInterfaces.includes(interfaceFilter)) return false;
+  }
+
   return true;
 }
 
