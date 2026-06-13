@@ -77,6 +77,11 @@
           <span>Clear Stats</span>
         </button>
 
+        <!-- Help Icon -->
+        <button onclick="toggleModal('helpModal', true)" class="btn btn-icon" title="Dashboard Help & Guide">
+          <i data-lucide="help-circle"></i>
+        </button>
+
         <!-- Info / Help Icon -->
         <button onclick="toggleModal('infoModal', true)" class="btn btn-icon" title="About & Daemon Info">
           <i data-lucide="info"></i>
@@ -268,6 +273,26 @@
             <td id="infoDaemonVersion">-</td>
           </tr>
         </table>
+      </div>
+      <div class="modal-footer">
+        <button onclick="toggleModal('infoModal', false)" class="btn btn-primary">Close</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Help Modal -->
+  <div id="helpModal" class="modal-overlay hidden">
+    <div class="modal-card">
+      <div class="modal-header">
+        <h2>Dashboard Help & Guide</h2>
+        <button onclick="toggleModal('helpModal', false)" class="btn btn-icon"><i data-lucide="x"></i></button>
+      </div>
+      <div class="modal-body">
+        <h3>Network Traffic Graph</h3>
+        <p>The network traffic graph displays real-time packet activity. It updates dynamically according to the auto-refresh settings and shows the counts of forwarded, dropped, and rewritten mDNS packets over time to help you identify trends or anomalies.</p>
+
+        <h3>Domain Names Explorer</h3>
+        <p>The "Domain Names Explorer" panel displays mDNS service types/domain queries and responses aggregated by service name. You can expand a domain to inspect the source IPs querying or responding to that service, apply real-time filters by search query, packet interface, or packet action, and observe active interfaces.</p>
 
         <h3>Active Hosts Panel Purpose</h3>
         <p>The "Active Hosts" panel maps out which source IP addresses are transmitting traffic on local network interfaces. It allows network administrators to see active devices, verify interface routing layout, and spot idle states.</p>
@@ -276,7 +301,7 @@
         <p>The settings gear icon allows adjusting chart buffers and poll schedules locally. The info button exposes current connection profiles and debug diagnostics.</p>
       </div>
       <div class="modal-footer">
-        <button onclick="toggleModal('infoModal', false)" class="btn btn-primary">Close</button>
+        <button onclick="toggleModal('helpModal', false)" class="btn btn-primary">Close</button>
       </div>
     </div>
   </div>
