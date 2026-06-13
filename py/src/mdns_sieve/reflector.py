@@ -11,7 +11,7 @@ import select
 import socket
 import struct
 import time
-from typing import Dict, Set, Any, Optional, List
+from typing import Dict, Set, Any, Optional
 
 # Only import fcntl on UNIX platforms to keep static tools/type checkers happy
 try:
@@ -232,12 +232,9 @@ class MdnsReflector:
         is_rewritten_any = False
         dest_count = 0
 
-        forwarded_interfaces: List[str] = []
-        dropped_interfaces: List[str] = []
-
         all_pkt_names = q_names | a_names
-        allowed_names_packet: Set[str] = set()
-        disallowed_names_packet: Set[str] = set()
+        allowed_names_packet: Dict[str, Set[str]] = {}
+        disallowed_names_packet: Dict[str, Set[str]] = {}
 
         for dst_interface, sock in list(self.sockets.items()):
             if dst_interface == src_interface:
@@ -279,8 +276,8 @@ class MdnsReflector:
                 stripped_a = total_orig_a - kept_a
 
                 if kept_q == 0 and kept_a == 0:
-                    disallowed_names_packet.update(all_pkt_names)
-                    dropped_interfaces.append(dst_interface)
+                    for name in all_pkt_names:
+                        disallowed_names_packet.setdefault(name, set()).add(dst_interface)
                     logger.debug(
                         "Dropped mDNS packet from %s -> %s for names: %s",
                         src_interface,
@@ -288,9 +285,9 @@ class MdnsReflector:
                         names_desc,
                     )
                 elif stripped_q == 0 and stripped_a == 0:
-                    allowed_names_packet.update(all_pkt_names)
+                    for name in all_pkt_names:
+                        allowed_names_packet.setdefault(name, set()).add(dst_interface)
                     is_forwarded_any = True
-                    forwarded_interfaces.append(dst_interface)
                     logger.debug(
                         "Forwarding mDNS packet (%d bytes) from %s -> %s for names: %s",
                         len(data),
@@ -311,10 +308,11 @@ class MdnsReflector:
                         if rr.target_name:
                             kept_names.add(rr.target_name)
                     stripped_names = all_pkt_names - kept_names
-                    allowed_names_packet.update(kept_names)
-                    disallowed_names_packet.update(stripped_names)
+                    for name in kept_names:
+                        allowed_names_packet.setdefault(name, set()).add(dst_interface)
+                    for name in stripped_names:
+                        disallowed_names_packet.setdefault(name, set()).add(dst_interface)
                     is_rewritten_any = True
-                    forwarded_interfaces.append(dst_interface)
 
                     rewritten_packet = DNSPacket(
                         transaction_id=packet.transaction_id,
@@ -355,9 +353,9 @@ class MdnsReflector:
                             self.mark_interface_offline(dst_interface)
             else:
                 if self.config.should_forward(src_interface, dst_interface, q_names, a_names):
-                    allowed_names_packet.update(all_pkt_names)
+                    for name in all_pkt_names:
+                        allowed_names_packet.setdefault(name, set()).add(dst_interface)
                     is_forwarded_any = True
-                    forwarded_interfaces.append(dst_interface)
                     logger.debug(
                         "Forwarding mDNS packet (%d bytes) from %s -> %s for names: %s",
                         len(data),
@@ -372,8 +370,8 @@ class MdnsReflector:
                         if e.errno in (errno.EBADF, errno.ENETDOWN, errno.ENETUNREACH):
                             self.mark_interface_offline(dst_interface)
                 else:
-                    disallowed_names_packet.update(all_pkt_names)
-                    dropped_interfaces.append(dst_interface)
+                    for name in all_pkt_names:
+                        disallowed_names_packet.setdefault(name, set()).add(dst_interface)
                     is_mixed = False
                     if q_names and a_names:
                         q_forward = self.config.should_forward(
@@ -402,7 +400,8 @@ class MdnsReflector:
                         )
 
         if dest_count == 0:
-            disallowed_names_packet.update(all_pkt_names)
+            for name in all_pkt_names:
+                disallowed_names_packet.setdefault(name, set())
 
         if is_rewritten_any:
             action = "rewritten"
@@ -418,8 +417,6 @@ class MdnsReflector:
             allowed_names_packet,
             disallowed_names_packet,
             packet.is_response,
-            forwarded_interfaces,
-            dropped_interfaces,
         )
 
     def _collect_stats(
@@ -427,23 +424,21 @@ class MdnsReflector:
         src_interface: str,
         src_ip: str,
         action: str,
-        allowed_names: Set[str],
-        disallowed_names: Set[str],
+        allowed_names: Dict[str, Set[str]],
+        disallowed_names: Dict[str, Set[str]],
         is_response: bool = False,
-        forwarded_interfaces: Optional[List[str]] = None,
-        dropped_interfaces: Optional[List[str]] = None,
     ) -> None:
         """Helper to collect routing and name statistics for the command server."""
+        allowed_converted = {name: list(ifaces) for name, ifaces in allowed_names.items()}
+        disallowed_converted = {name: list(ifaces) for name, ifaces in disallowed_names.items()}
         self.command_server.collect_stats(
             src_interface,
             src_ip,
             action,
-            allowed_names,
-            disallowed_names,
+            allowed_converted,
+            disallowed_converted,
             time.time(),
             is_response,
-            forwarded_interfaces,
-            dropped_interfaces,
         )
 
     def try_initialize_command_server(self) -> None:

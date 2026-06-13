@@ -138,7 +138,17 @@ class SieveGUIHandler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:
         """Handles HTTP POST requests."""
         if self.path == "/api/clear":
-            self._handle_api_command("clear")
+            content_length = int(self.headers.get("Content-Length", 0))
+            post_data = self.rfile.read(content_length) if content_length > 0 else b""
+            clear_tracking = False
+            if post_data:
+                try:
+                    payload = json.loads(post_data.decode("utf-8"))
+                    if isinstance(payload, dict):
+                        clear_tracking = bool(payload.get("clear_tracking", False))
+                except (json.JSONDecodeError, UnicodeDecodeError):
+                    pass
+            self._handle_api_command({"command": "clear", "clear_tracking": clear_tracking})
         else:
             self._send_json({"status": "error", "error": "Not Found"}, 404)
 

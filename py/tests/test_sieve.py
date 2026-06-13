@@ -5,10 +5,15 @@ Verifies configuration loading, fine-grained matching, robust mDNS binary parsin
 with recursion protection, and mock-based network socket reflection behavior.
 """
 
+# pylint: disable=too-many-lines
+
 import io
+import time
 import json
+import os
 import socket
 import struct
+import tempfile
 import unittest
 from unittest.mock import MagicMock, patch
 
@@ -800,14 +805,66 @@ rules: []
         self.assertEqual(entry["packet_count"], 1)
 
     def test_clear_command(self) -> None:
-        """Verifies that the clear command resets statistics."""
-        config = AppConfig(interfaces=["eth0"], default_action="drop", rules=[])
-        reflector = MdnsReflector(config)
-        reflector.command_server.stats_total = 5
+        """Verifies that the clear command resets statistics and optionally tracking data."""
+        fd, db_path = tempfile.mkstemp()
+        os.close(fd)
+        try:
+            config = AppConfig(
+                interfaces=["eth0"],
+                default_action="drop",
+                rules=[],
+                tracking=TrackingConfig(
+                    enabled=True, max_records=500, db_path=db_path, retention_days=1
+                ),
+            )
+            reflector = MdnsReflector(config)
+            reflector.command_server.stats_total = 5
 
-        resp = reflector._process_command(b'{"command": "clear"}')
-        self.assertEqual(resp["status"], "ok")
-        self.assertEqual(reflector.command_server.stats_total, 0)
+            # Seed buffer and database
+            now = time.time()
+            key = ("192.168.1.100", "local", "eth0")
+            reflector.command_server.db_buffer_queries[key] = {
+                "first_seen": now - 5.0,
+                "last_seen": now,
+                "packet_count": 1,
+                "last_forwarded_interfaces": "eth0",
+                "last_dropped_interfaces": "",
+            }
+            # Flush to database
+            reflector.command_server.flush_stats(force=True)
+
+            # Now verify it's in DB
+            self.assertEqual(len(reflector.command_server.db_manager.fetch_records("queries")), 1)
+
+            # 1. Clear command without clear_tracking: stats reset but tracking remains
+            resp = reflector._process_command(b'{"command": "clear"}')
+            self.assertEqual(resp["status"], "ok")
+            self.assertEqual(reflector.command_server.stats_total, 0)
+            self.assertEqual(len(reflector.command_server.db_manager.fetch_records("queries")), 1)
+
+            # Let's add stats and buffer entry again
+            reflector.command_server.stats_total = 5
+            now = time.time()
+            reflector.command_server.db_buffer_queries[key] = {
+                "first_seen": now - 5.0,
+                "last_seen": now,
+                "packet_count": 1,
+                "last_forwarded_interfaces": "eth0",
+                "last_dropped_interfaces": "",
+            }
+
+            # 2. Clear command with clear_tracking: stats reset and tracking cleared
+            resp = reflector._process_command(b'{"command": "clear", "clear_tracking": true}')
+            self.assertEqual(resp["status"], "ok")
+            self.assertEqual(reflector.command_server.stats_total, 0)
+            self.assertEqual(len(reflector.command_server.db_buffer_queries), 0)
+            self.assertEqual(len(reflector.command_server.db_manager.fetch_records("queries")), 0)
+        finally:
+            if os.path.exists(db_path):
+                try:
+                    os.remove(db_path)
+                except OSError:
+                    pass
 
     def test_command_server_integration(self) -> None:
         """Tests TCP socket connection, JSON command processing, and buffer limits."""
@@ -864,6 +921,90 @@ rules: []
         # Clean up
         client.close()
         reflector.stop()
+
+    def test_packet_rewrite_stats_collection(self) -> None:
+        """Verifies stats categorization under rewrite and multi-interface scenarios."""
+        # 1. Packet rewrite scenario: 1 question allowed, 1 answer dropped
+        rules = [
+            FilterRule(
+                action=True,
+                services=["allowed.local"],
+                src="eth0",
+                dst="eth1",
+            ),
+            FilterRule(
+                action=False,
+                services=["dropped.local"],
+                src="eth0",
+                dst="eth1",
+            ),
+        ]
+        config = AppConfig(
+            interfaces=["eth0", "eth1"],
+            default_action="drop",
+            rewrite_mixed_packets=True,
+            command_server=CommandServerConfig(enabled=True, host="127.0.0.1", port=0),
+            tracking=TrackingConfig(
+                enabled=True,
+                max_records=500,
+                db_path=":memory:",
+                flush_interval_seconds=3600,
+                retention_days=7,
+            ),
+            rules=rules,
+        )
+        ref = MdnsReflector(config)
+        ref.sockets = {"eth0": MagicMock(), "eth1": MagicMock()}
+        ref.interface_ips = {"eth0": "192.168.1.1", "eth1": "192.168.2.1"}
+
+        # Construct packet: QD=1, AN=1 (Query packet, but containing both question and answer)
+        mixed_packet = (
+            struct.pack("!HHHHHH", 1234, 0, 1, 1, 0, 0)
+            + b"\x07allowed\x05local\x00"
+            + struct.pack("!HH", 12, 1)
+            + b"\x07dropped\x05local\x00"
+            + struct.pack("!HHIH", 12, 1, 120, 0)
+        )
+
+        ref.handle_packet("eth0", mixed_packet, "192.168.1.100")
+
+        # allowed.local should be in db_buffer_queries with fwd interface
+        key_allowed = ("192.168.1.100", "allowed.local", "eth0")
+        self.assertIn(key_allowed, ref.command_server.db_buffer_queries)
+        entry_allowed = ref.command_server.db_buffer_queries[key_allowed]
+        self.assertEqual(entry_allowed["last_forwarded_interfaces"], "eth1")
+        self.assertEqual(entry_allowed["last_dropped_interfaces"], "")
+
+        # dropped.local should be in db_buffer_queries with drop interface
+        key_dropped = ("192.168.1.100", "dropped.local", "eth0")
+        self.assertIn(key_dropped, ref.command_server.db_buffer_queries)
+        entry_dropped = ref.command_server.db_buffer_queries[key_dropped]
+        self.assertEqual(entry_dropped["last_forwarded_interfaces"], "")
+        self.assertEqual(entry_dropped["last_dropped_interfaces"], "eth1")
+
+        # 2. Response packet rewrite scenario: 1 question allowed, 1 answer dropped
+        # Construct response packet (Flags=0x8000)
+        mixed_resp_packet = (
+            struct.pack("!HHHHHH", 1234, 0x8000, 1, 1, 0, 0)
+            + b"\x07allowed\x05local\x00"
+            + struct.pack("!HH", 12, 1)
+            + b"\x07dropped\x05local\x00"
+            + struct.pack("!HHIH", 12, 1, 120, 0)
+        )
+
+        ref.handle_packet("eth0", mixed_resp_packet, "192.168.1.100")
+
+        # allowed.local should be in db_buffer_responses with fwd interface
+        self.assertIn(key_allowed, ref.command_server.db_buffer_responses)
+        entry_allowed_resp = ref.command_server.db_buffer_responses[key_allowed]
+        self.assertEqual(entry_allowed_resp["last_forwarded_interfaces"], "eth1")
+        self.assertEqual(entry_allowed_resp["last_dropped_interfaces"], "")
+
+        # dropped.local should be in db_buffer_responses with drop interface
+        self.assertIn(key_dropped, ref.command_server.db_buffer_responses)
+        entry_dropped_resp = ref.command_server.db_buffer_responses[key_dropped]
+        self.assertEqual(entry_dropped_resp["last_forwarded_interfaces"], "")
+        self.assertEqual(entry_dropped_resp["last_dropped_interfaces"], "eth1")
 
 
 if __name__ == "__main__":

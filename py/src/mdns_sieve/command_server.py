@@ -10,7 +10,7 @@ import json
 import logging
 import socket
 import time
-from typing import Dict, Any, Optional, Set, List, Tuple
+from typing import Dict, Any, Optional, List, Tuple
 
 from mdns_sieve.database import DatabaseManager
 
@@ -80,12 +80,10 @@ class CommandServerManager:
         src_interface: str,
         src_ip: str,
         action: str,
-        allowed_names: Set[str],
-        disallowed_names: Set[str],
+        allowed_names: Dict[str, List[str]],
+        disallowed_names: Dict[str, List[str]],
         timestamp: float,
         is_response: bool = False,
-        forwarded_interfaces: Optional[List[str]] = None,
-        dropped_interfaces: Optional[List[str]] = None,
     ) -> None:
         # pylint: disable=too-many-branches,too-many-arguments,too-many-locals,too-many-statements
         """Collects routing and name statistics."""
@@ -101,10 +99,8 @@ class CommandServerManager:
             self.stats_rewritten += 1
 
         if self.db_manager:
-            forwarded_str = ",".join(sorted(forwarded_interfaces)) if forwarded_interfaces else ""
-            dropped_str = ",".join(sorted(dropped_interfaces)) if dropped_interfaces else ""
             buffer = self.db_buffer_responses if is_response else self.db_buffer_queries
-            all_names = allowed_names | disallowed_names
+            all_names = set(allowed_names.keys()) | set(disallowed_names.keys())
             for name in all_names:
                 parts = name.split(".")
                 service_type = name
@@ -113,6 +109,13 @@ class CommandServerManager:
                         service_type = ".".join(parts[i:])
                         break
                 key = (src_ip, service_type, src_interface)
+
+                fwd_list = allowed_names.get(name, [])
+                drop_list = disallowed_names.get(name, [])
+
+                forwarded_str = ",".join(sorted(fwd_list))
+                dropped_str = ",".join(sorted(drop_list))
+
                 if key not in buffer:
                     buffer[key] = {
                         "first_seen": timestamp,
@@ -125,8 +128,10 @@ class CommandServerManager:
                     entry = buffer[key]
                     entry["last_seen"] = timestamp
                     entry["packet_count"] += 1
-                    entry["last_forwarded_interfaces"] = forwarded_str
-                    entry["last_dropped_interfaces"] = dropped_str
+                    if fwd_list:
+                        entry["last_forwarded_interfaces"] = forwarded_str
+                    if drop_list:
+                        entry["last_dropped_interfaces"] = dropped_str
 
     def flush_stats(self, force: bool = False) -> None:
         """Flushes the database memory buffers and prunes old records."""
@@ -272,7 +277,7 @@ class CommandServerManager:
 
         return self._dispatch_command(cmd, payload)
 
-    # pylint: disable=too-many-return-statements,too-many-statements,too-many-locals
+    # pylint: disable=too-many-return-statements,too-many-statements,too-many-locals,too-many-branches
     def _dispatch_command(self, cmd: str, payload: Dict[str, Any]) -> Dict[str, Any]:
         """Executes the specific command routine."""
         if cmd == "stats":
@@ -415,6 +420,10 @@ class CommandServerManager:
             self.stats_rewritten = 0
             if self.db_manager:
                 self.db_manager.save_global_stats(0, 0, 0, 0)
+                if payload.get("clear_tracking"):
+                    self.db_buffer_responses.clear()
+                    self.db_buffer_queries.clear()
+                    self.db_manager.clear_tracking_data()
             return {"status": "ok"}
 
         return {"status": "error", "error": "Unknown command"}

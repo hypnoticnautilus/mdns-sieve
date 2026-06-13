@@ -811,12 +811,24 @@ function updateChartWindow() {
 /* ==========================================================================
    Clear Statistics Action Handler
    ========================================================================== */
-async function confirmClearStats() {
-  const confirmed = confirm("Are you sure you want to reset all mDNS Sieve server statistics? This will clear all packet counts, hosts activity, and domain lookup logs.");
-  if (!confirmed) return;
+function confirmClearStats() {
+  const chk = document.getElementById('chkClearTracking');
+  if (chk) chk.checked = false;
+  toggleModal('clearStatsModal', true);
+}
+
+async function executeClearStats() {
+  toggleModal('clearStatsModal', false);
+  const clearTracking = document.getElementById('chkClearTracking')?.checked || false;
 
   try {
-    const res = await fetchApi('/api/clear', { method: 'POST' });
+    const res = await fetchApi('/api/clear', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({ clear_tracking: clearTracking })
+    });
     if (res.status === 'ok') {
       alert("Statistics successfully cleared.");
       // Reset chart lines
@@ -830,6 +842,15 @@ async function confirmClearStats() {
         sparklines[id].update();
       });
       lastStatsData = null;
+
+      if (clearTracking) {
+        latestHostsData = {};
+        queriesCache = {};
+        responsesCache = {};
+        renderHostsTable();
+        updateDomains({ queries: {}, responses: {} });
+      }
+
       refreshData();
     }
   } catch (err) {

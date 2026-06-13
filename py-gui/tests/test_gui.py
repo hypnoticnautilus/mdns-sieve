@@ -207,7 +207,20 @@ class TestGUIIntegration(unittest.TestCase):
 
         self.assertEqual(body["status"], "ok")
 
-        mock_query.assert_called_once_with("127.0.0.1", 5354, "clear")
+        mock_query.assert_called_once_with(
+            "127.0.0.1", 5354, {"command": "clear", "clear_tracking": False}
+        )
+
+        mock_query.reset_mock()
+        req2 = urllib.request.Request(url, data=b'{"clear_tracking": true}', method="POST")
+        with urllib.request.urlopen(req2) as res:
+            self.assertEqual(res.status, 200)
+            body = json.loads(res.read().decode("utf-8"))
+
+        self.assertEqual(body["status"], "ok")
+        mock_query.assert_called_once_with(
+            "127.0.0.1", 5354, {"command": "clear", "clear_tracking": True}
+        )
 
     @patch("mdns_sieve_gui.main.query_daemon")
     def test_api_proxy_failure(self, mock_query: MagicMock) -> None:

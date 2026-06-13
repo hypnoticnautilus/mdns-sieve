@@ -91,3 +91,29 @@ def test_global_stats():
         # Update and load
         db.save_global_stats(20, 15, 3, 2)
         assert db.load_global_stats() == (20, 15, 3, 2)
+
+
+def test_clear_tracking_data():
+    """Test clearing all tracking records from the database."""
+    with tempfile.NamedTemporaryFile() as tmp:
+        db = DatabaseManager(tmp.name)
+        now = time.time()
+
+        # Insert records into both tables
+        db.batch_upsert(
+            "responses", [("192.168.1.10", "_http._tcp.local", "eth0", now, now, 1, "eth1", "")]
+        )
+        db.batch_upsert(
+            "queries", [("192.168.1.20", "_http._tcp.local", "eth0", now, now, 1, "", "eth2")]
+        )
+
+        # Verify they are present
+        assert len(db.fetch_records("responses")) == 1
+        assert len(db.fetch_records("queries")) == 1
+
+        # Clear them
+        db.clear_tracking_data()
+
+        # Verify they are deleted
+        assert len(db.fetch_records("responses")) == 0
+        assert len(db.fetch_records("queries")) == 0

@@ -161,3 +161,12 @@ class DatabaseManager:
         except sqlite3.Error as e:
             logger.error("Failed to fetch records from %s: %s", table_name, e)
             return []
+
+    def clear_tracking_data(self) -> None:
+        """Deletes all records from the responses and queries tables."""
+        try:
+            with self._get_connection() as conn:
+                conn.execute("DELETE FROM responses")
+                conn.execute("DELETE FROM queries")
+        except sqlite3.Error as e:
+            logger.error("Failed to clear tracking data: %s", e)
