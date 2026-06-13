@@ -164,6 +164,12 @@ class TestGUIIntegration(unittest.TestCase):
             self.assertEqual(res.status, 200)
             self.assertIn("application/javascript", res.info().get("Content-Type", ""))
 
+        # favicon.svg
+        url = f"http://127.0.0.1:{self.port}/favicon.svg"
+        with urllib.request.urlopen(url) as res:
+            self.assertEqual(res.status, 200)
+            self.assertIn("image/svg+xml", res.info().get("Content-Type", ""))
+
     def test_missing_route(self) -> None:
         """Verifies wrong paths return 404."""
         url = f"http://127.0.0.1:{self.port}/invalid-page"

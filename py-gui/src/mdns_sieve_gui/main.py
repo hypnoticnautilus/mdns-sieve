@@ -120,6 +120,8 @@ class SieveGUIHandler(BaseHTTPRequestHandler):
             self._serve_asset("static/style.css", "text/css; charset=utf-8")
         elif path == "/app.js":
             self._serve_asset("static/app.js", "application/javascript; charset=utf-8")
+        elif path == "/favicon.svg":
+            self._serve_asset("static/favicon.svg", "image/svg+xml")
         elif path in ("/api/stats", "/api/hosts", "/api/names"):
             cmd = path.split("/")[-1]
             self._handle_api_command(cmd)
