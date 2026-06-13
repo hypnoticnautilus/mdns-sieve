@@ -14,6 +14,10 @@ let latestHostsData = {};
 // Sieve daemon details (updated dynamically from API responses)
 let daemonHost = '127.0.0.1';
 let daemonPort = 5354;
+let daemonCommit = '-';
+let guiCommit = '-';
+let daemonVersion = '-';
+let guiVersion = '-';
 
 // Cache stats for domain filtering
 let fwdQueriesCache = {};
@@ -131,6 +135,8 @@ function toggleModal(modalId, show) {
     if (modalId === 'infoModal') {
       document.getElementById('infoDaemonHost').textContent = daemonHost;
       document.getElementById('infoDaemonPort').textContent = daemonPort;
+      document.getElementById('infoDaemonVersion').textContent = `${daemonVersion} (${daemonCommit})`;
+      document.getElementById('infoGuiVersion').textContent = `${guiVersion} (${guiCommit})`;
     }
   } else {
     modal.classList.add('hidden');
@@ -214,6 +220,10 @@ async function refreshData() {
     // Update daemon metadata from connection config info
     if (statsRes.host) daemonHost = statsRes.host;
     if (statsRes.port) daemonPort = statsRes.port;
+    if (statsRes.commit) daemonCommit = statsRes.commit;
+    if (statsRes.gui_commit) guiCommit = statsRes.gui_commit;
+    if (statsRes.version) daemonVersion = statsRes.version;
+    if (statsRes.gui_version) guiVersion = statsRes.gui_version;
 
     // 2. Fetch Hosts
     const hostsRes = await fetchApi('/api/hosts');

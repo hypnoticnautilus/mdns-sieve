@@ -17,6 +17,37 @@ from mdns_sieve.database import DatabaseManager
 logger = logging.getLogger("mdns_sieve.command_server")
 
 
+def get_daemon_commit() -> str:
+    # pylint: disable=import-outside-toplevel,broad-exception-caught
+    """Attempts to load build-time stamped commit, with developer dynamic fallback."""
+    try:
+        from mdns_sieve._version import __commit__
+
+        if __commit__ != "unknown":
+            return __commit__
+    except (ImportError, ModuleNotFoundError):
+        pass
+
+    import subprocess
+
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--short", "HEAD"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            check=True,
+            timeout=1.0,
+        )
+        git_val = result.stdout.strip()
+        if git_val:
+            return git_val
+    except Exception:
+        pass
+
+    return "unknown"
+
+
 # pylint: disable=too-many-instance-attributes
 class CommandServerManager:
     """Manages the TCP Command Server socket, client connections, stats, and commands."""
@@ -253,6 +284,8 @@ class CommandServerManager:
                     "dropped": self.stats_dropped,
                     "rewritten": self.stats_rewritten,
                 },
+                "version": "0.1.0",
+                "commit": get_daemon_commit(),
             }
 
         if cmd in ("hosts", "names", "host_details"):

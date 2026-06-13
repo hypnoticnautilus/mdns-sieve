@@ -25,6 +25,37 @@ logging.basicConfig(
 logger = logging.getLogger("mdns_sieve_gui")
 
 
+def get_gui_commit() -> str:
+    # pylint: disable=import-outside-toplevel,broad-exception-caught
+    """Attempts to load build-time stamped commit, with developer dynamic fallback."""
+    try:
+        from mdns_sieve_gui._version import __commit__
+
+        if __commit__ != "unknown":
+            return __commit__
+    except (ImportError, ModuleNotFoundError):
+        pass
+
+    import subprocess
+
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--short", "HEAD"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            check=True,
+            timeout=1.0,
+        )
+        git_val = result.stdout.strip()
+        if git_val:
+            return git_val
+    except Exception:
+        pass
+
+    return "unknown"
+
+
 def query_daemon(host: str, port: int, command: Union[str, Dict[str, Any]]) -> str:
     """Connects to the daemon TCP command server, sends the command, and returns the response."""
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -130,11 +161,24 @@ class SieveGUIHandler(BaseHTTPRequestHandler):
             host = self.server.daemon_host  # type: ignore[attr-defined]
             port = self.server.daemon_port  # type: ignore[attr-defined]
             resp_str = query_daemon(host, port, cmd)
+
+            # Intercept stats command to inject GUI commit and version
+            if cmd == "stats" or (isinstance(cmd, dict) and cmd.get("command") == "stats"):
+                try:
+                    resp_data = json.loads(resp_str)
+                    if isinstance(resp_data, dict):
+                        resp_data["gui_commit"] = get_gui_commit()
+                        resp_data["gui_version"] = "0.1.0"
+                        resp_str = json.dumps(resp_data)
+                except Exception as e:  # pylint: disable=broad-exception-caught
+                    logger.error("Failed to parse/enrich daemon stats response: %s", str(e))
+
+            resp_bytes = resp_str.encode("utf-8")
             self.send_response(200)
             self.send_header("Content-Type", "application/json; charset=utf-8")
-            self.send_header("Content-Length", str(len(resp_str)))
+            self.send_header("Content-Length", str(len(resp_bytes)))
             self.end_headers()
-            self.wfile.write(resp_str.encode("utf-8"))
+            self.wfile.write(resp_bytes)
         except Exception as e:  # pylint: disable=broad-exception-caught
             logger.error("Error communicating with daemon: %s", str(e))
             self._send_json(
