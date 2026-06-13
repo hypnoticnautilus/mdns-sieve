@@ -125,9 +125,30 @@ When tracking is enabled, the daemon persists traffic metrics to an SQLite datab
 
 `mdns-sieve` provides a premium, responsive web interface to inspect network activity in real time.
 
+### Dark and Light Mode Dashboard Overviews
+
+| Dark Theme Overview | Light Theme Overview |
+| :---: | :---: |
+| ![Dark Theme Overview](py-gui/screenshots/overview-dark_theme.png) | ![Light Theme Overview](py-gui/screenshots/overview-light_theme.png) |
+
 ### Features
-* **Network Traffic Graph**: Displays live trend lines showing forwarded, dropped, and rewritten packets.
-* **Domain Names Explorer**: Groups mDNS records by service type and source IP. Supports regex/text queries, action selectors (Forwarded/Dropped), and interface filters. Service names are middle-ellipsized to fit cleanly, with hover tooltips and a copy button supporting HTTP secure context fallback.
-* **Active Hosts**: Lists active source IPs on network interfaces with sparklines showing packet activity.
-* **Responsive Flex Modals**: Consolidation of nested scrollbars inside modal bodies for seamless viewport adjustments.
-* **Stats Reset & Database Purging**: GUI controls allowing users to reset dashboard counters and optionally purge SQLite tracking history completely.
+
+#### Network Traffic Graph
+Displays live trend lines showing forwarded, dropped, and rewritten packets.
+![Network Traffic Graph](py-gui/screenshots/network_graph.png)
+
+#### Domain Names Explorer
+Groups mDNS records by service type and source IP. Supports regex/text queries, action selectors (Forwarded/Dropped), and interface filters. Service names are middle-ellipsized to fit cleanly, with hover tooltips and a copy button supporting HTTP secure context fallback.
+![Domain Names Explorer](py-gui/screenshots/domain_name_explorer.png)
+
+#### Active Hosts
+Lists active source IPs on network interfaces with sparklines showing packet activity.
+![Active Hosts](py-gui/screenshots/active_hosts.png)
+
+#### Host Details & Flex Modals
+Consolidation of nested scrollbars inside modal bodies for seamless viewport adjustments and full host statistics.
+![Host Details](py-gui/screenshots/host_details.png)
+
+#### Stats Reset & Database Purging
+GUI controls allowing users to reset dashboard counters and optionally purge SQLite tracking history completely.
+
