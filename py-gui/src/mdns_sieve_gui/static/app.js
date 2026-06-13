@@ -161,6 +161,45 @@ function toggleModal(modalId, show) {
   }
 }
 
+async function copyToClipboard(text, btn, event) {
+  if (event) {
+    event.stopPropagation();
+  }
+  try {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      await navigator.clipboard.writeText(text);
+    } else {
+      // Fallback for non-secure HTTP contexts where navigator.clipboard is disabled
+      const textarea = document.createElement('textarea');
+      textarea.value = text;
+      textarea.style.position = 'fixed';
+      textarea.style.top = '-9999px';
+      textarea.style.left = '-9999px';
+      document.body.appendChild(textarea);
+      textarea.select();
+      const successful = document.execCommand('copy');
+      document.body.removeChild(textarea);
+      if (!successful) {
+        throw new Error('execCommand copy failed');
+      }
+    }
+
+    const originalHtml = btn.innerHTML;
+    btn.innerHTML = '<i data-lucide="check" style="color: var(--color-green);"></i>';
+    if (typeof lucide !== 'undefined') {
+      lucide.createIcons();
+    }
+    setTimeout(() => {
+      btn.innerHTML = originalHtml;
+      if (typeof lucide !== 'undefined') {
+        lucide.createIcons();
+      }
+    }, 1500);
+  } catch (err) {
+    console.error('Failed to copy text: ', err);
+  }
+}
+
 function saveSettings() {
   const rateInput = document.getElementById('setRefreshInterval');
   const windowInput = document.getElementById('setChartWindow');
@@ -540,6 +579,9 @@ function filterDomains() {
       <div class="domain-name">
         <i data-lucide="${arrowIcon}"></i>
         <span title="${name}">${shortenServiceName(name)}</span>
+        <button class="copy-name-btn" title="Copy full name to clipboard" onclick="copyToClipboard('${name}', this, event)">
+          <i data-lucide="copy"></i>
+        </button>
       </div>
       <span class="domain-total-hits">${totalHits.toLocaleString()} packets</span>
     `;
@@ -900,7 +942,14 @@ function renderHostDetailsTable() {
     
     const tr = document.createElement('tr');
     tr.innerHTML = `
-      <td><strong title="${r.service_type}">${shortenServiceName(r.service_type)}</strong></td>
+      <td>
+        <div class="service-name-wrapper">
+          <strong title="${r.service_type}">${shortenServiceName(r.service_type)}</strong>
+          <button class="copy-name-btn" title="Copy full name to clipboard" onclick="copyToClipboard('${r.service_type}', this, event)">
+            <i data-lucide="copy"></i>
+          </button>
+        </div>
+      </td>
       <td>${r.packet_count.toLocaleString()}</td>
       <td>
         <div style="display: flex; gap: 4px; flex-wrap: wrap;">

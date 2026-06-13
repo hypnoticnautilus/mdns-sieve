@@ -1001,3 +1001,46 @@ input:checked + .slider:before {
   font-weight: 600;
   border: 1px solid rgba(239, 68, 68, 0.2);
 }
+
+/* Copy to Clipboard Button styling */
+.service-name-wrapper {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.copy-name-btn {
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.2s ease, transform 0.2s ease;
+  background: transparent;
+  border: 1px solid transparent;
+  cursor: pointer;
+  padding: 4px;
+  color: var(--text-secondary);
+  border-radius: 4px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  line-height: 1;
+}
+
+.copy-name-btn svg {
+  width: 14px !important;
+  height: 14px !important;
+}
+
+.copy-name-btn:hover {
+  color: var(--color-primary);
+  background-color: var(--btn-secondary-hover);
+  border-color: var(--border-color);
+}
+
+.domain-name:hover .copy-name-btn,
+.service-name-wrapper:hover .copy-name-btn,
+td:hover .copy-name-btn {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+
