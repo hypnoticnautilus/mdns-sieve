@@ -767,6 +767,7 @@ input:checked + .slider:before {
   box-shadow: var(--shadow-lg);
   display: flex;
   flex-direction: column;
+  max-height: 90vh;
 }
 
 .modal-header {
@@ -780,7 +781,7 @@ input:checked + .slider:before {
 .modal-body {
   padding: 24px;
   overflow-y: auto;
-  max-height: 400px;
+  flex: 1;
 }
 
 .modal-footer {
