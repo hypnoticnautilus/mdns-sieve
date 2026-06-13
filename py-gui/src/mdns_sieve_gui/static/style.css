@@ -463,14 +463,13 @@ input:checked + .slider:before {
    ========================================================================== */
 .split-row {
   display: grid;
-  grid-template-columns: 3fr 2fr;
+  grid-template-columns: 1fr 1fr;
   gap: 20px;
 }
 
 .hosts-section,
 .domains-section {
-  max-height: calc(100vh - 44px);
-  min-height: 250px;
+  height: calc(100vh - 48px);
 }
 
 /* Hosts Table Component */
