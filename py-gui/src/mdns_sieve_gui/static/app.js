@@ -30,6 +30,24 @@ let expandedDomains = new Set();
 let mainChart = null;
 let sparklines = {};
 
+// Shorten long service names by ellipsizing leading parts while preserving last 3 components (family)
+function shortenServiceName(name) {
+  if (!name) return name;
+  const parts = name.split('.');
+  if (parts.length <= 3) {
+    return name;
+  }
+  const leading = parts.slice(0, -3);
+  const trailing = parts.slice(-3);
+  const shortenedLeading = leading.map(part => {
+    if (part.length > 10) {
+      return part.substring(0, 3) + '...' + part.substring(part.length - 3);
+    }
+    return part;
+  });
+  return shortenedLeading.concat(trailing).join('.');
+}
+
 // Initialize application on load
 window.addEventListener('DOMContentLoaded', () => {
   // Setup Lucide icons
@@ -528,7 +546,7 @@ function filterDomains() {
     headerDiv.innerHTML = `
       <div class="domain-name">
         <i data-lucide="${arrowIcon}"></i>
-        <span>${name}</span>
+        <span title="${name}">${shortenServiceName(name)}</span>
       </div>
       <span class="domain-total-hits">${totalHits.toLocaleString()} packets</span>
     `;
@@ -868,7 +886,7 @@ function renderHostDetailsTable() {
     
     const tr = document.createElement('tr');
     tr.innerHTML = `
-      <td><strong>${r.service_type}</strong></td>
+      <td><strong title="${r.service_type}">${shortenServiceName(r.service_type)}</strong></td>
       <td>${r.packet_count.toLocaleString()}</td>
       <td>
         <div style="display: flex; gap: 4px; flex-wrap: wrap;">
