@@ -37,8 +37,14 @@ This repository is organized as follows:
   * `src/mdns_sieve/mdns_parser.py` — Custom binary mDNS parser with recursion pointer protection.
   * `src/mdns_sieve/config.py` — YAML configuration rule validation and matching engine.
   * `src/mdns_sieve/reflector.py` — Linux `SO_BINDTODEVICE` isolated sockets and recovery event loop.
+  * `src/mdns_sieve/database.py` — SQLite DatabaseManager for metrics persistence and automated pruning.
+  * `src/mdns_sieve/command_server.py` — TCP API command server providing stats, hosts activity, and domain metrics.
   * `src/mdns_sieve/main.py` — CLI entrypoint, logging levels, and signal handling.
   * `tests/` — Mock-based unit and integration test suite.
+* `py-gui/` — Dashboard Web GUI and HTTP control server (Python 3.10+).
+  * `src/mdns_sieve_gui/main.py` — HTTP dashboard server and proxy handler to the backend reflector TCP socket.
+  * `src/mdns_sieve_gui/static/` — Static HTML, CSS (Vanilla CSS dark/light mode), and Javascript (Vanilla JS with Sparkline graphs and Lucide icons).
+  * `tests/` — Integration and unit test suite for the dashboard.
 
 ---
 
@@ -54,7 +60,7 @@ python3 -m venv .venv
 ```
 
 ### 2. Configure mdns-sieve
-Create a `config.yaml` file to define your active interfaces and sieve rules:
+Create a `config.yaml` file to define your active interfaces, rules, database metrics persistence, and TCP command server:
 ```yaml
 interfaces:
   - eth0   # Trusted LAN
@@ -69,6 +75,19 @@ rules:
       - "_googlecast._tcp.local"
     src: "*"
     dst: "*"
+
+# Database persistence for tracking packets
+tracking:
+  enabled: true
+  db_path: "/var/lib/mdns-sieve/responses.db"
+  flush_interval_seconds: 5
+  retention_days: 7
+
+# Control server for GUI dashboard connection
+command_server:
+  enabled: true
+  host: "127.0.0.1"
+  port: 5354
 ```
 
 ### 3. Run the Daemon
@@ -78,3 +97,37 @@ sudo .venv/bin/mdns-sieve --config config.yaml -vv
 ```
 * Use `-v` to log dropped packets.
 * Use `-vv` to log both dropped packets and successfully forwarded packets.
+
+### 4. Build and Run the Web GUI
+Navigate to the `py-gui/` directory, build the wheel, and start the GUI server:
+```bash
+cd ../py-gui/
+python3 -m venv .venv
+.venv/bin/pip install tox
+.venv/bin/pip wheel --no-deps -w dist .
+.venv/bin/pip install dist/*.whl
+.venv/bin/mdns-sieve-gui --daemon-host 127.0.0.1 --daemon-port 5354 --port 8080
+```
+Open `http://localhost:8080` in your browser to access the dashboard.
+
+---
+
+## Telemetry & SQLite Persistence
+
+When tracking is enabled, the daemon persists traffic metrics to an SQLite database (default: `/var/lib/mdns-sieve/responses.db`).
+* **Performance-First Design**: The system records metrics in-memory first to minimize disk writes, periodically flushing batch queries and responses.
+* **Automated Pruning**: Telemetry history is automatically pruned based on a configurable `retention_days` limit to prevent unbounded database growth.
+* **Graceful Shutdown**: Catches termination signals (`SIGINT` and `SIGTERM`) to cleanly flush all pending memory buffers to disk before exiting.
+
+---
+
+## Web Dashboard GUI
+
+`mdns-sieve` provides a premium, responsive web interface to inspect network activity in real time.
+
+### Features
+* **Network Traffic Graph**: Displays live trend lines showing forwarded, dropped, and rewritten packets.
+* **Domain Names Explorer**: Groups mDNS records by service type and source IP. Supports regex/text queries, action selectors (Forwarded/Dropped), and interface filters. Service names are middle-ellipsized to fit cleanly, with hover tooltips and a copy button supporting HTTP secure context fallback.
+* **Active Hosts**: Lists active source IPs on network interfaces with sparklines showing packet activity.
+* **Responsive Flex Modals**: Consolidation of nested scrollbars inside modal bodies for seamless viewport adjustments.
+* **Stats Reset & Database Purging**: GUI controls allowing users to reset dashboard counters and optionally purge SQLite tracking history completely.
