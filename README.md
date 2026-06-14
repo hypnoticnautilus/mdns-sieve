@@ -47,6 +47,8 @@ python3 -m venv /path/to/venv
 /path/to/venv/bin/pip install -f dist/ mdns-sieve-gui  # optional
 ```
 
+A separate virtual environment is not required but is highly recommended when using the `setcap` command to allow the daemon to listen for mDNS packets. See below.
+
 ### 3. Configure mdns-sieve
 Create a `config.yaml` file to define your active interfaces, rules, tracking options, and command server options:
 ```yaml
@@ -83,6 +85,7 @@ The daemon requires the `CAP_NET_RAW` capability to bind sockets to specific net
 
 You can grant this capability to the virtual environment's Python binary using `setcap` to run the daemon without root privileges:
 ```bash
+# Warning: do not do this for your system Python executable (/usr/bin/python) or for shared virtual environments.
 sudo setcap cap_net_raw+ep /path/to/venv/bin/python3
 /path/to/venv/bin/mdns-sieve --config config.yaml [-v[v]]
 ```
