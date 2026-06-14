@@ -30,24 +30,6 @@ IoT devices are notoriously chatty, broadcasting state advertisements constantly
 
 ---
 
-## Project Structure
-
-This repository is organized as follows:
-* `py/` — Production-grade Python 3.10+ package.
-  * `src/mdns_sieve/mdns_parser.py` — Custom binary mDNS parser with recursion pointer protection.
-  * `src/mdns_sieve/config.py` — YAML configuration rule validation and matching engine.
-  * `src/mdns_sieve/reflector.py` — Linux `SO_BINDTODEVICE` isolated sockets and recovery event loop.
-  * `src/mdns_sieve/database.py` — SQLite DatabaseManager for metrics persistence and automated pruning.
-  * `src/mdns_sieve/command_server.py` — TCP API command server providing stats, hosts activity, and domain metrics.
-  * `src/mdns_sieve/main.py` — CLI entrypoint, logging levels, and signal handling.
-  * `tests/` — Mock-based unit and integration test suite.
-* `py-gui/` — Dashboard Web GUI and HTTP control server (Python 3.10+).
-  * `src/mdns_sieve_gui/main.py` — HTTP dashboard server and proxy handler to the backend reflector TCP socket.
-  * `src/mdns_sieve_gui/static/` — Static HTML, CSS (Vanilla CSS dark/light mode), and Javascript (Vanilla JS with Sparkline graphs and Lucide icons).
-  * `tests/` — Integration and unit test suite for the dashboard.
-
----
-
 ## Quick Start (Python Version)
 
 ### 1. Build the Wheel
@@ -112,15 +94,6 @@ Open `http://localhost:8080` in your browser to access the dashboard.
 
 ---
 
-## Telemetry & SQLite Persistence
-
-When tracking is enabled, the daemon persists traffic metrics to an SQLite database (default: `/var/lib/mdns-sieve/responses.db`).
-* **Performance-First Design**: The system records metrics in-memory first to minimize disk writes, periodically flushing batch queries and responses.
-* **Automated Pruning**: Telemetry history is automatically pruned based on a configurable `retention_days` limit to prevent unbounded database growth.
-* **Graceful Shutdown**: Catches termination signals (`SIGINT` and `SIGTERM`) to cleanly flush all pending memory buffers to disk before exiting.
-
----
-
 ## Web Dashboard GUI
 
 `mdns-sieve` provides a premium, responsive web interface to inspect network activity in real time.
@@ -137,6 +110,13 @@ When tracking is enabled, the daemon persists traffic metrics to an SQLite datab
 Displays live trend lines showing forwarded, dropped, and rewritten packets.
 ![Network Traffic Graph](py-gui/screenshots/network_graph.png)
 
+#### Telemetry & SQLite Persistence
+
+When tracking is enabled, the daemon persists traffic metrics to an SQLite database (default: `/var/lib/mdns-sieve/responses.db`).
+* **Performance-First Design**: The system records metrics in-memory first to minimize disk writes, periodically flushing batch queries and responses.
+* **Automated Pruning**: Telemetry history is automatically pruned based on a configurable `retention_days` limit to prevent unbounded database growth.
+* **Graceful Shutdown**: Catches termination signals (`SIGINT` and `SIGTERM`) to cleanly flush all pending memory buffers to disk before exiting.
+
 #### Domain Names Explorer
 Groups mDNS records by service type and source IP. Supports regex/text queries, action selectors (Forwarded/Dropped), and interface filters. Service names are middle-ellipsized to fit cleanly, with hover tooltips and a copy button supporting HTTP secure context fallback.
 ![Domain Names Explorer](py-gui/screenshots/domain_name_explorer.png)
@@ -152,3 +132,22 @@ Consolidation of nested scrollbars inside modal bodies for seamless viewport adj
 #### Stats Reset & Database Purging
 GUI controls allowing users to reset dashboard counters and optionally purge SQLite tracking history completely.
 
+---
+
+---
+
+## Project Structure
+
+This repository is organized as follows:
+* `py/` — Production-grade Python 3.10+ package.
+  * `src/mdns_sieve/mdns_parser.py` — Custom binary mDNS parser with recursion pointer protection.
+  * `src/mdns_sieve/config.py` — YAML configuration rule validation and matching engine.
+  * `src/mdns_sieve/reflector.py` — Linux `SO_BINDTODEVICE` isolated sockets and recovery event loop.
+  * `src/mdns_sieve/database.py` — SQLite DatabaseManager for metrics persistence and automated pruning.
+  * `src/mdns_sieve/command_server.py` — TCP API command server providing stats, hosts activity, and domain metrics.
+  * `src/mdns_sieve/main.py` — CLI entrypoint, logging levels, and signal handling.
+  * `tests/` — Mock-based unit and integration test suite.
+* `py-gui/` — Dashboard Web GUI and HTTP control server (Python 3.10+).
+  * `src/mdns_sieve_gui/main.py` — HTTP dashboard server and proxy handler to the backend reflector TCP socket.
+  * `src/mdns_sieve_gui/static/` — Static HTML, CSS (Vanilla CSS dark/light mode), and Javascript (Vanilla JS with Sparkline graphs and Lucide icons).
+  * `tests/` — Integration and unit test suite for the dashboard.
