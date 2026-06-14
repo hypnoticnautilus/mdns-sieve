@@ -1,32 +1,32 @@
 # mdns-sieve
 
-`mdns-sieve` is a lightweight, dependency-free Multicast DNS (mDNS) reflector and filtering daemon. It allows you to safely forward mDNS queries and responses across multiple isolated network interfaces (subnets/VLANs) while using fine-grained glob-style rules to control exactly which services and hostnames are visible across zones.
+`mdns-sieve` is a lightweight Multicast DNS (mDNS) reflector and filtering daemon. It forwards mDNS queries and responses across multiple isolated network interfaces (subnets/VLANs) using glob-style rules to control which services and hostnames are visible across zones.
 
-Designed specifically for low-end hardware and resource-constrained environments (like OpenWrt routers and Raspberry Pis), the codebase is built to be ultra-robust, self-recovering, and completely dependency-free.
+Designed for low-end hardware and resource-constrained environments (like OpenWrt routers and Raspberry Pis), the codebase is self-recovering and dependency-free.
 
 ---
 
 ## Why Deploy `mdns-sieve` on Your Network?
 
-Traditional mDNS reflectors (like Avahi's reflector mode or `mdns-repeater`) operate as simple "blind mirrors"—they repeat all mDNS packets across all interfaces. In segmented home or enterprise environments containing untrusted IoT devices, this introduces critical security and performance issues.
+Traditional mDNS reflectors (like Avahi's reflector mode or `mdns-repeater`) operate as mirrors that repeat all mDNS packets across all interfaces. In segmented network environments containing IoT devices, this introduces security and performance issues.
 
 `mdns-sieve` addresses these concerns by providing:
 
 ### 1. Prevention of Network Reconnaissance (Scanning)
-A compromised IoT device (such as a smart plug, IP camera, or smart TV) is a common entry point for attackers. Once compromised, attackers scan the network using mDNS queries.
-* **Without Filtering:** A query looking for servers, workstations, or file shares is reflected to your trusted network. Your personal computers and NAS devices respond, providing the attacker with a complete map of your trusted devices and IPs.
-* **With mdns-sieve:** You can explicitly define rule policies that prevent mDNS queries originating from the IoT network from ever reaching your trusted interfaces. Your high-value devices remain invisible.
+A compromised IoT device (such as a smart plug, IP camera, or smart TV) can be used to scan the network using mDNS queries.
+* **Without Filtering:** A query looking for servers, workstations, or file shares is reflected to other networks. Personal computers and NAS devices respond, providing a map of local devices and IPs.
+* **With mdns-sieve:** You can define rules that prevent mDNS queries originating from the IoT network from reaching other interfaces.
 
 ### 2. Mitigation of Service Spoofing and Cache Poisoning
 mDNS is unauthenticated, meaning clients trust any response they hear on the network.
-* **Without Filtering:** A compromised device on the IoT VLAN can broadcast fake responses claiming to be your local network printer or file share. Laptops on the trusted VLAN may route sensitive print jobs or credentials directly to the attacker.
-* **With mdns-sieve:** Unsolicited advertisements/answers from the IoT network are blocked from entering your trusted zone unless explicitly whitelisted.
+* **Without Filtering:** A device on the IoT VLAN can broadcast responses claiming to be a local network printer or file share. Laptops on other VLANs may route print jobs or credentials to the device.
+* **With mdns-sieve:** Unsolicited advertisements/answers from the IoT network are blocked from entering other zones unless explicitly allowed.
 
-### 3. Reduced Attack Surface on Trusted Devices
-Many operating systems run background services that automatically respond to mDNS queries (even if their port-level firewalls block incoming connections). Blocking incoming queries from untrusted segments prevents your trusted machines from leaking their presence or service versions.
+### 3. Reduced Attack Surface on Local Devices
+Many operating systems run background services that respond to mDNS queries. Blocking incoming queries from other segments prevents local machines from leaking their presence or service versions.
 
-### 4. Reduced Wi-Fi Multicast Noise (Better Battery Life)
-IoT devices are notoriously chatty, broadcasting state advertisements constantly. Since multicast Wi-Fi frames are transmitted at slow baseline rates, this eats up airtime. Blocking these unsolicited packets at the reflector prevents them from flooding your trusted Wi-Fi, saving battery life and CPU cycles on your phones and laptops.
+### 4. Reduced Wi-Fi Multicast Noise
+IoT devices often broadcast state advertisements. Since multicast Wi-Fi frames are transmitted at slow baseline rates, this consumes airtime. Blocking these unsolicited packets at the reflector prevents them from flooding the Wi-Fi, reducing CPU usage on connected devices.
 
 ---
 
@@ -94,9 +94,9 @@ Open `http://localhost:8080` in your browser to access the dashboard.
 
 ---
 
-## Web Dashboard GUI
+## Web Dashboard
 
-`mdns-sieve` provides a premium, responsive web interface to inspect network activity in real time.
+`mdns-sieve` provides a responsive web interface to inspect network activity.
 
 ### Dark and Light Mode Dashboard Overviews
 
@@ -107,18 +107,18 @@ Open `http://localhost:8080` in your browser to access the dashboard.
 ### Features
 
 #### Network Traffic Graph
-Displays live trend lines showing forwarded, dropped, and rewritten packets.
+Displays trend lines showing forwarded, dropped, and rewritten packets.
 ![Network Traffic Graph](py-gui/screenshots/network_graph.png)
 
 #### Telemetry & SQLite Persistence
 
 When tracking is enabled, the daemon persists traffic metrics to an SQLite database (default: `/var/lib/mdns-sieve/responses.db`).
-* **Performance-First Design**: The system records metrics in-memory first to minimize disk writes, periodically flushing batch queries and responses.
-* **Automated Pruning**: Telemetry history is automatically pruned based on a configurable `retention_days` limit to prevent unbounded database growth.
-* **Graceful Shutdown**: Catches termination signals (`SIGINT` and `SIGTERM`) to cleanly flush all pending memory buffers to disk before exiting.
+* **In-Memory Buffering**: The system records metrics in-memory first to minimize disk writes, periodically flushing batch queries and responses.
+* **Automated Pruning**: Telemetry history is pruned based on a configurable `retention_days` limit to prevent database growth.
+* **Shutdown Handling**: Catches termination signals (`SIGINT` and `SIGTERM`) to flush all pending memory buffers to disk before exiting.
 
 #### Domain Names Explorer
-Groups mDNS records by service type and source IP. Supports regex/text queries, action selectors (Forwarded/Dropped), and interface filters. Service names are middle-ellipsized to fit cleanly, with hover tooltips and a copy button supporting HTTP secure context fallback.
+Groups mDNS records by service type and source IP. Supports regex/text queries, action selectors (Forwarded/Dropped), and interface filters. Service names are middle-ellipsized, with hover tooltips and a copy button supporting HTTP secure context fallback.
 ![Domain Names Explorer](py-gui/screenshots/domain_name_explorer.png)
 
 #### Active Hosts
@@ -126,11 +126,11 @@ Lists active source IPs on network interfaces with sparklines showing packet act
 ![Active Hosts](py-gui/screenshots/active_hosts.png)
 
 #### Host Details & Flex Modals
-Consolidation of nested scrollbars inside modal bodies for seamless viewport adjustments and full host statistics.
+Consolidation of nested scrollbars inside modal bodies for viewport adjustments and host statistics.
 ![Host Details](py-gui/screenshots/host_details.png)
 
 #### Stats Reset & Database Purging
-GUI controls allowing users to reset dashboard counters and optionally purge SQLite tracking history completely.
+GUI controls allowing users to reset dashboard counters and purge SQLite tracking history.
 
 ---
 
@@ -139,7 +139,7 @@ GUI controls allowing users to reset dashboard counters and optionally purge SQL
 ## Project Structure
 
 This repository is organized as follows:
-* `py/` — Production-grade Python 3.10+ package.
+* `py/` — Python 3.10+ package.
   * `src/mdns_sieve/mdns_parser.py` — Custom binary mDNS parser with recursion pointer protection.
   * `src/mdns_sieve/config.py` — YAML configuration rule validation and matching engine.
   * `src/mdns_sieve/reflector.py` — Linux `SO_BINDTODEVICE` isolated sockets and recovery event loop.
