@@ -32,17 +32,23 @@ IoT devices often broadcast state advertisements. Since multicast Wi-Fi frames a
 
 ## Quick Start (Python Version)
 
-### 1. Build the Wheel
-Navigate to the `py/` directory and compile the package:
+### 1. Build the wheel(s)
 ```bash
-cd py/
-python3 -m venv .venv
-.venv/bin/pip install tox
-.venv/bin/pip wheel --no-deps -w dist .
+pip wheel --no-deps -w dist py
+pip wheel --no-deps -w dist py-gui # optional web dashboard
 ```
 
-### 2. Configure mdns-sieve
-Create a `config.yaml` file to define your active interfaces, rules, database metrics persistence, and TCP command server:
+This will produce to Python wheels in the `dist` directory. Transfer them to the system on which to want to run the program.
+
+### 2. Install the Wheels
+```bash
+python3 -m venv /path/to/venv
+/path/to/venv/bin/pip install -f dist/ mdns-sieve
+/path/to/venv/bin/pip install -f dist/ mdns-sieve-gui  # optional
+```
+
+### 3. Configure mdns-sieve
+Create a `config.yaml` file to define your active interfaces, rules, tracking options, and command server options:
 ```yaml
 interfaces:
   - eth0   # Trusted LAN
@@ -72,25 +78,29 @@ command_server:
   port: 5354
 ```
 
-### 3. Run the Daemon
-Since the daemon manages raw multicast sockets and binds to protected port `5353`, it must be run with root privileges:
+### 4. Run the Daemon
+The daemon requires the `CAP_NET_RAW` capability to bind sockets to specific network interfaces using `SO_BINDTODEVICE`.
+
+You can grant this capability to the virtual environment's Python binary using `setcap` to run the daemon without root privileges:
 ```bash
-sudo .venv/bin/mdns-sieve --config config.yaml -vv
+sudo setcap cap_net_raw+ep /path/to/venv/bin/python3
+/path/to/venv/bin/mdns-sieve --config config.yaml [-v[v]]
+```
+
+Alternatively, you can run the daemon directly using `sudo`:
+```bash
+sudo /path/to/venv/bin/mdns-sieve --config config.yaml [-v[v]]
 ```
 * Use `-v` to log dropped packets.
 * Use `-vv` to log both dropped packets and successfully forwarded packets.
 
-### 4. Build and Run the Web GUI
-Navigate to the `py-gui/` directory, build the wheel, and start the GUI server:
+
+### 5. (Optional) Run the Web GUI
+Start the GUI server:
 ```bash
-cd ../py-gui/
-python3 -m venv .venv
-.venv/bin/pip install tox
-.venv/bin/pip wheel --no-deps -w dist .
-.venv/bin/pip install dist/*.whl
-.venv/bin/mdns-sieve-gui --daemon-host 127.0.0.1 --daemon-port 5354 --port 8080
+/path/to/venv/bin/mdns-sieve-gui --daemon-host 127.0.0.1 --daemon-port 5354 --port 8080
 ```
-Open `http://localhost:8080` in your browser to access the dashboard.
+Open `http://your_server:8080` in your browser to access the dashboard.
 
 ---
 
@@ -131,8 +141,6 @@ Consolidation of nested scrollbars inside modal bodies for viewport adjustments 
 
 #### Stats Reset & Database Purging
 GUI controls allowing users to reset dashboard counters and purge SQLite tracking history.
-
----
 
 ---
 
