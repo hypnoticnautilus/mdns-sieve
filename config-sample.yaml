@@ -1,62 +1,53 @@
 # mdns-sieve Configuration File
-# Modern, fine-grained, secure mDNS routing config
+# This file defines how mDNS packets are filtered and routed between interfaces.
 
-# Physical interfaces to bind and listen on
+# List of physical network interfaces available on the system.
 interfaces:
   - eth0
-  - eth1
   - wlan0
+  - br0
 
-# Default action if a packet does not match any of the rules below
-default_action: drop
+# The default action to take if no rules match a packet ("forward" or "drop").
+default_action: "forward"
 
-# Granular packet rewriting (Optional)
-# If true, packets containing a mixture of forwarded and dropped records
-# will be dynamically rewritten to strip the disallowed records and keep the allowed ones.
-# If false (default), the entire packet is dropped if any record in it is disallowed.
+# Whether to rewrite packets that contain both questions and answers (default: false).
 rewrite_mixed_packets: false
-
-# Command server for querying statistics and managing daemon state (Optional)
-# Enabling this activates a non-blocking TCP socket to retrieve traffic stats.
-# The web GUI client connects to this port to retrieve analytics data.
+`
+# Configuration for the internal TCP command and statistics server.
 command_server:
   enabled: true
-  host: "127.0.0.1"
-  port: 5354
-
-# Active Host History Tracking (Optional)
-# If enabled, the daemon will keep a bounded history of unique queries and
-# responses seen from each active host. This data is displayed in the GUI modal.
-tracking:
-  enabled: false
-  max_records: 500
-
-# GUI web server for monitoring and managing mDNS Sieve (Optional)
-# Specify the host and port for HTTP clients to connect to the GUI dashboard.
-# The GUI will also connect to the command_server above.
-gui_server:
   host: "0.0.0.0"
   port: 8080
 
-# Filtering rules evaluated in order (first match wins)
+# Configuration for tracking host-specific history in a local database.
+tracking:
+  enabled: true
+  max_records: 1000
+  db_path: "/var/lib/mdns-sieve/responses.db"
+  flush_interval_seconds: 3600
+  retention_days: 7
+
+# Filtering rules are processed in order; the first matching rule wins.
 rules:
-  # 1. Drop Spotify Connect advertisements from eth1 going to wlan0
-  - action: drop
-    services:
-      - "_spotify-connect._tcp.local"
-    src: eth1
-    dst: wlan0
-
-  # 2. Forward Google Cast (Chromecast, Google Home) across all subnets
-  - action: forward
-    services:
-      - "_googlecast._tcp.local"
-    src: "*"
+  # Example 1: Forward specific local services from eth0 to any destination
+  - action: "forward"
+    src: "eth0"
     dst: "*"
+    services: 
+      - "*.local"
+      - "home.*"
+    hosts: ["device1.local", "printer.lan"]
+    section: "any"
 
-  # 3. Forward reflection of a specific Apple TV's records from eth0 to eth1
-  - action: forward
-    hosts:
-      - "appletv.local"
-    src: eth0
-    dst: eth1
+  # Example 2: Drop specific answer packets from the wireless network
+  - action: "drop"
+    src: "wlan0"
+    dst: "*"
+    section: "answers"
+
+  # Example 3: Only forward questions for a specific local domain
+  - action: "forward"
+    src: "*"
+    dst: "br0"
+    services: ["internal.corp"]
+    section: "questions"
