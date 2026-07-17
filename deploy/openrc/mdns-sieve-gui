@@ -1,0 +1,17 @@
+#!/sbin/openrc-run
+
+name="mdns-sieve-gui"
+description="mDNS Sieve Web GUI"
+
+command="/opt/mdns-sieve/venv/bin/python3"
+command_args="-u -m mdns_sieve_gui.main -c /opt/mdns-sieve/config.yaml"
+command_background="yes"
+pidfile="/run/${RC_SVCNAME}.pid"
+
+output_log="/var/log/mdns-sieve-gui.log"
+error_log="/var/log/mdns-sieve-gui.log"
+
+depend() {
+	need net
+	after mdns-sieve
+}

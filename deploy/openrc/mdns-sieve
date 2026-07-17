@@ -1,0 +1,17 @@
+#!/sbin/openrc-run
+
+name="mdns-sieve"
+description="mDNS Sieve Reflector Daemon"
+
+command="/opt/mdns-sieve/venv/bin/python3"
+command_args="-u -m mdns_sieve.main -c /opt/mdns-sieve/config.yaml"
+command_background="yes"
+pidfile="/run/${RC_SVCNAME}.pid"
+
+output_log="/var/log/mdns-sieve.log"
+error_log="/var/log/mdns-sieve.log"
+
+depend() {
+	need net
+	after firewall
+}
