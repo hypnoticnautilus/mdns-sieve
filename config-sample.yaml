@@ -12,7 +12,13 @@ default_action: "forward"
 
 # Whether to rewrite packets that contain both questions and answers (default: false).
 rewrite_mixed_packets: false
-`
+
+# Whether to forward known-answers in query packets.
+# If false (default), the daemon uses two-way rule checks to strip known-answers
+# that would leak service details to isolated subnets.
+# If true, all known-answers in query packets are allowed to be forwarded.
+forward_known_answers: false
+
 # Configuration for the internal TCP command and statistics server.
 command_server:
   enabled: true

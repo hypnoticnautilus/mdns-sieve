@@ -254,17 +254,23 @@ class MdnsReflector:
                 filtered_answers = [
                     rr
                     for rr in packet.answers
-                    if self.config.should_forward_record(src_interface, dst_interface, rr)
+                    if self.config.should_forward_record(
+                        src_interface, dst_interface, rr, packet.is_response
+                    )
                 ]
                 filtered_authorities = [
                     rr
                     for rr in packet.authorities
-                    if self.config.should_forward_record(src_interface, dst_interface, rr)
+                    if self.config.should_forward_record(
+                        src_interface, dst_interface, rr, packet.is_response
+                    )
                 ]
                 filtered_additionals = [
                     rr
                     for rr in packet.additionals
-                    if self.config.should_forward_record(src_interface, dst_interface, rr)
+                    if self.config.should_forward_record(
+                        src_interface, dst_interface, rr, packet.is_response
+                    )
                 ]
 
                 kq = len(filtered_questions)

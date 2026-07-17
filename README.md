@@ -50,13 +50,15 @@ python3 -m venv /path/to/venv
 A separate virtual environment is not required but is highly recommended when using the `setcap` command to allow the daemon to listen for mDNS packets. See below.
 
 ### 3. Configure mdns-sieve
-Create a `config.yaml` file to define your active interfaces, rules, tracking options, and command server options:
+Create a `config.yaml` file to define your active interfaces, rules, tracking options, and command server options. Example:
 ```yaml
 interfaces:
   - eth0   # Trusted LAN
   - wlan0  # IoT Wi-Fi
 
 default_action: drop
+rewrite_mixed_packets: true
+forward_known_answers: false
 
 rules:
   # Forward Trusted devices casting to IoT Chromecast

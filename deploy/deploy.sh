@@ -20,11 +20,11 @@ scp "$SCRIPT_DIR/config.yaml" "$HOST:$HOST_CONFIG"
 
 ssh "$HOST" sh <<EOF
 set -e
-trap "rm -rf \"$TD\"" EXIT
+trap "rm -rf \"$TD2\"" EXIT
 "$HOST_PY" -m pip uninstall -y mdns-sieve mdns-sieve-gui
 "$HOST_PY" -m pip install -f "$TD2" mdns-sieve mdns-sieve-gui
 pkill -fe mdns_sieve.main || true
 pkill -fe mdns_sieve_gui.main || true
-nohup "$HOST_PY" -m mdns_sieve.main -c "$HOST_CONFIG" > /var/log/mdns-sieve.log 2>&1 < /dev/null &
-nohup "$HOST_PY" -m mdns_sieve_gui.main -c "$HOST_CONFIG" > /var/log/mdns-sieve-gui.log 2>&1 < /dev/null &
+rc-service mdns-sieve restart
+rc-service mdns-sieve-gui restart
 EOF

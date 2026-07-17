@@ -683,7 +683,7 @@ rules: []
 
         # Construct a packet with 1 Question (allowed) and 1 Answer (dropped)
         mixed_packet = (
-            struct.pack("!HHHHHH", 42, 0, 1, 1, 0, 0)
+            struct.pack("!HHHHHH", 42, 0x8000, 1, 1, 0, 0)
             + b"\x05local\x00"
             + struct.pack("!HH", 12, 1)
             + b"\x05local\x00"
@@ -1005,6 +1005,90 @@ rules: []
         entry_dropped_resp = ref.command_server.db_buffer_responses[key_dropped]
         self.assertEqual(entry_dropped_resp["last_forwarded_interfaces"], "")
         self.assertEqual(entry_dropped_resp["last_dropped_interfaces"], "eth1")
+
+    def test_forward_known_answers_config(self) -> None:
+        """Verifies parsing and routing logic of forward_known_answers option."""
+        # 1. Parsing tests - Validation error on non-boolean
+        yaml_invalid = """
+interfaces: [eth0, eth1]
+default_action: drop
+forward_known_answers: "not-a-boolean"
+rules: []
+"""
+        with patch("builtins.open", return_value=io.StringIO(yaml_invalid)):
+            with self.assertRaises(ConfigurationError):
+                load_config("dummy.yaml")
+
+        # 2. Config load success
+        yaml_enabled = """
+interfaces: [eth0, eth1]
+default_action: drop
+forward_known_answers: true
+rules: []
+"""
+        with patch("builtins.open", return_value=io.StringIO(yaml_enabled)):
+            config = load_config("dummy.yaml")
+            self.assertTrue(config.forward_known_answers)
+
+        # 3. Routing tests when forward_known_answers is true
+        # (all known answers in queries are forwarded)
+        rules = [
+            FilterRule(
+                action=True,
+                services=["allowed.local"],
+                src="eth0",
+                dst="eth1",
+                section=RuleSection.QUESTIONS,
+            )
+        ]
+        config_true = AppConfig(
+            interfaces=["eth0", "eth1"],
+            default_action="drop",
+            rewrite_mixed_packets=True,
+            forward_known_answers=True,
+            rules=rules,
+        )
+        ref_true = MdnsReflector(config_true)
+        mock_sock_eth1 = MagicMock()
+        ref_true.sockets = {"eth0": MagicMock(), "eth1": mock_sock_eth1}
+        ref_true.interface_ips = {"eth0": "192.168.1.1", "eth1": "192.168.2.1"}
+
+        # Construct query packet with allowed question and dropped answer
+        query_packet = (
+            struct.pack("!HHHHHH", 1111, 0, 1, 1, 0, 0)
+            + b"\x07allowed\x05local\x00"
+            + struct.pack("!HH", 12, 1)
+            + b"\x07dropped\x05local\x00"
+            + struct.pack("!HHIH", 12, 1, 120, 0)
+        )
+        ref_true.handle_packet("eth0", query_packet)
+
+        # When forward_known_answers is True, the answer should NOT be stripped from the query
+        mock_sock_eth1.sendto.assert_called_once()
+        sent_packet_true = parse_mdns_packet(mock_sock_eth1.sendto.call_args[0][0])
+        self.assertEqual(len(sent_packet_true.questions), 1)
+        self.assertEqual(len(sent_packet_true.answers), 1)  # Answer kept!
+
+        # 4. Routing tests when forward_known_answers is false (two-way check logic applies)
+        config_false = AppConfig(
+            interfaces=["eth0", "eth1"],
+            default_action="drop",
+            rewrite_mixed_packets=True,
+            forward_known_answers=False,
+            rules=rules,
+        )
+        ref_false = MdnsReflector(config_false)
+        mock_sock_eth1_false = MagicMock()
+        ref_false.sockets = {"eth0": MagicMock(), "eth1": mock_sock_eth1_false}
+        ref_false.interface_ips = {"eth0": "192.168.1.1", "eth1": "192.168.2.1"}
+
+        ref_false.handle_packet("eth0", query_packet)
+        # When forward_known_answers is False, the answer should be
+        # stripped (since no rule allows it)
+        mock_sock_eth1_false.sendto.assert_called_once()
+        sent_packet_false = parse_mdns_packet(mock_sock_eth1_false.sendto.call_args[0][0])
+        self.assertEqual(len(sent_packet_false.questions), 1)
+        self.assertEqual(len(sent_packet_false.answers), 0)  # Answer stripped!
 
 
 if __name__ == "__main__":

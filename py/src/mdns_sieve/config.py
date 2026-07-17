@@ -119,6 +119,7 @@ class AppConfig:
     interfaces: List[str]
     default_action: str  # "forward" or "drop"
     rewrite_mixed_packets: bool = False
+    forward_known_answers: bool = False
     command_server: Optional[CommandServerConfig] = None
     tracking: Optional[TrackingConfig] = None
     rules: List[FilterRule] = field(default_factory=list)
@@ -153,9 +154,8 @@ class AppConfig:
     def should_forward_question(self, src_interface: str, dst_interface: str, name: str) -> bool:
         """Determines if a single question name should be forwarded."""
         for rule in self.rules:
-            if rule.applies_to(src_interface, dst_interface):
-                if rule.matches_packet({name}, set()):
-                    return rule.action
+            if rule.applies_to(src_interface, dst_interface) and rule.matches_packet({name}, set()):
+                return rule.action
         return self.default_action == "forward"
 
     def should_forward_record(
@@ -163,16 +163,48 @@ class AppConfig:
         src_interface: str,
         dst_interface: str,
         rr: Any,  # Avoid circular import issues or keep it generic
+        is_response: bool = True,
     ) -> bool:
         """Determines if a single resource record should be forwarded."""
         names = {rr.name}
         if rr.target_name:
             names.add(rr.target_name)
 
-        for rule in self.rules:
-            if rule.applies_to(src_interface, dst_interface):
-                if rule.matches_packet(set(), names):
+        if not is_response:
+            if self.forward_known_answers:
+                return True
+
+            # For known-answers in a query packet (is_response=False), we must
+            # ensure we don't leak services from isolated subnets. A known-
+            # answer is allowed to be forwarded to dst_interface only if:
+            # 1. dst_interface is allowed to send this record type as an
+            #    answer back to src_interface.
+            # 2. Or, src_interface is allowed to send this record type as
+            #    an answer to dst_interface.
+            for rule in self.rules:
+                # Check 1: dst_interface -> src_interface answers
+                if (
+                    rule.applies_to(dst_interface, src_interface)
+                    and rule.section in (RuleSection.ANSWERS, RuleSection.ANY)
+                    and rule.matches_packet(set(), names)
+                ):
                     return rule.action
+                # Check 2: src_interface -> dst_interface answers
+                if (
+                    rule.applies_to(src_interface, dst_interface)
+                    and rule.section in (RuleSection.ANSWERS, RuleSection.ANY)
+                    and rule.matches_packet(set(), names)
+                ):
+                    return rule.action
+            # If no rules match the known-answer record in the query packet,
+            # we default to drop (False) to prevent cross-subnet information
+            # leakage.
+            return False
+
+        # For actual response/advertisement packets (is_response=True)
+        for rule in self.rules:
+            if rule.applies_to(src_interface, dst_interface) and rule.matches_packet(set(), names):
+                return rule.action
         return self.default_action == "forward"
 
 
@@ -281,6 +313,11 @@ def load_config(config_path: str) -> AppConfig:
     if not isinstance(rewrite_mixed_packets, bool):
         raise ConfigurationError("'rewrite_mixed_packets' must be a boolean")
 
+    # Validate forward_known_answers
+    forward_known_answers = raw_data.get("forward_known_answers", False)
+    if not isinstance(forward_known_answers, bool):
+        raise ConfigurationError("'forward_known_answers' must be a boolean")
+
     # Validate command_server
     command_server = None
     raw_server = raw_data.get("command_server")
@@ -340,6 +377,7 @@ def load_config(config_path: str) -> AppConfig:
         interfaces=interfaces,
         default_action=default_action,
         rewrite_mixed_packets=rewrite_mixed_packets,
+        forward_known_answers=forward_known_answers,
         command_server=command_server,
         tracking=tracking,
         rules=rules,
