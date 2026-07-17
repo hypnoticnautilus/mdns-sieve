@@ -231,6 +231,10 @@ class MdnsReflector:
         is_forwarded_any = False
         is_rewritten_any = False
         dest_count = 0
+        kept_q = 0
+        kept_a = 0
+        stripped_q = 0
+        stripped_a = 0
 
         all_pkt_names = q_names | a_names
         allowed_names_packet: Dict[str, Set[str]] = {}
@@ -263,19 +267,22 @@ class MdnsReflector:
                     if self.config.should_forward_record(src_interface, dst_interface, rr)
                 ]
 
-                kept_q = len(filtered_questions)
-                kept_a = (
-                    len(filtered_answers) + len(filtered_authorities) + len(filtered_additionals)
-                )
+                kq = len(filtered_questions)
+                ka = len(filtered_answers) + len(filtered_authorities) + len(filtered_additionals)
                 total_orig_q = len(packet.questions)
                 total_orig_a = (
                     len(packet.answers) + len(packet.authorities) + len(packet.additionals)
                 )
 
-                stripped_q = total_orig_q - kept_q
-                stripped_a = total_orig_a - kept_a
+                sq = total_orig_q - kq
+                sa = total_orig_a - ka
 
-                if kept_q == 0 and kept_a == 0:
+                kept_q = max(kept_q, kq)
+                kept_a = max(kept_a, ka)
+                stripped_q = max(stripped_q, sq)
+                stripped_a = max(stripped_a, sa)
+
+                if kq == 0 and ka == 0:
                     for name in all_pkt_names:
                         disallowed_names_packet.setdefault(name, set()).add(dst_interface)
                     logger.debug(
@@ -284,7 +291,7 @@ class MdnsReflector:
                         dst_interface,
                         names_desc,
                     )
-                elif stripped_q == 0 and stripped_a == 0:
+                elif sq == 0 and sa == 0:
                     for name in all_pkt_names:
                         allowed_names_packet.setdefault(name, set()).add(dst_interface)
                     is_forwarded_any = True
@@ -340,10 +347,10 @@ class MdnsReflector:
                         len(data),
                         src_interface,
                         dst_interface,
-                        kept_q,
-                        kept_a,
-                        stripped_q,
-                        stripped_a,
+                        kq,
+                        ka,
+                        sq,
+                        sa,
                     )
                     try:
                         sock.sendto(serialized_data, ("224.0.0.251", 5353))
@@ -417,6 +424,10 @@ class MdnsReflector:
             allowed_names_packet,
             disallowed_names_packet,
             packet.is_response,
+            kept_q,
+            kept_a,
+            stripped_q,
+            stripped_a,
         )
 
     def _collect_stats(
@@ -427,6 +438,10 @@ class MdnsReflector:
         allowed_names: Dict[str, Set[str]],
         disallowed_names: Dict[str, Set[str]],
         is_response: bool = False,
+        kept_q: int = 0,
+        kept_a: int = 0,
+        stripped_q: int = 0,
+        stripped_a: int = 0,
     ) -> None:
         """Helper to collect routing and name statistics for the command server."""
         allowed_converted = {name: list(ifaces) for name, ifaces in allowed_names.items()}
@@ -439,6 +454,10 @@ class MdnsReflector:
             disallowed_converted,
             time.time(),
             is_response,
+            kept_q,
+            kept_a,
+            stripped_q,
+            stripped_a,
         )
 
     def try_initialize_command_server(self) -> None:

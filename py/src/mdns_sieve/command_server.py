@@ -10,7 +10,7 @@ import json
 import logging
 import socket
 import time
-from typing import Dict, Any, Optional, List, Tuple
+from typing import Dict, Any, Optional, List, Tuple, Set
 
 from mdns_sieve.database import DatabaseManager
 
@@ -84,6 +84,10 @@ class CommandServerManager:
         disallowed_names: Dict[str, List[str]],
         timestamp: float,
         is_response: bool = False,
+        kept_q: int = 0,
+        kept_a: int = 0,
+        stripped_q: int = 0,
+        stripped_a: int = 0,
     ) -> None:
         # pylint: disable=too-many-branches,too-many-arguments,too-many-locals,too-many-statements
         """Collects routing and name statistics."""
@@ -97,9 +101,19 @@ class CommandServerManager:
             self.stats_dropped += 1
         elif action == "rewritten":
             self.stats_rewritten += 1
-
+            # For rewritten packets, we increment the underlying counts based on how many items were
+            # actually kept/dropped.
+            if kept_q > 0 or kept_a > 0:
+                self.stats_forwarded += kept_q + kept_a
+            if stripped_q > 0 or stripped_a > 0:
+                # We only increment dropped if there were actually items stripped.
+                self.stats_dropped += stripped_q + stripped_a
         if self.db_manager:
             buffer = self.db_buffer_responses if is_response else self.db_buffer_queries
+
+            service_type_stats: Dict[
+                str, Tuple[Set[str], Set[str]]
+            ] = {}  # service_type -> (allowed_set, disallowed_set)
             all_names = set(allowed_names.keys()) | set(disallowed_names.keys())
             for name in all_names:
                 parts = name.split(".")
@@ -108,13 +122,23 @@ class CommandServerManager:
                     if part.startswith("_"):
                         service_type = ".".join(parts[i:])
                         break
+
+                if service_type not in service_type_stats:
+                    service_type_stats[service_type] = (set(), set())
+
+                allowed_set, disallowed_set = service_type_stats[service_type]
+                allowed_set.update(allowed_names.get(name, []))
+                disallowed_set.update(disallowed_names.get(name, []))
+
+            for service_type, (allowed_set, disallowed_set) in service_type_stats.items():
+                disallowed_set -= allowed_set
                 key = (src_ip, service_type, src_interface)
 
-                fwd_list = allowed_names.get(name, [])
-                drop_list = disallowed_names.get(name, [])
+                fwd_list = sorted(list(allowed_set))
+                drop_list = sorted(list(disallowed_set))
 
-                forwarded_str = ",".join(sorted(fwd_list))
-                dropped_str = ",".join(sorted(drop_list))
+                forwarded_str = ",".join(fwd_list)
+                dropped_str = ",".join(drop_list)
 
                 if key not in buffer:
                     buffer[key] = {
