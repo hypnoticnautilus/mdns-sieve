@@ -11,16 +11,20 @@ HOST_CONFIG="$3"
 
 TD="$(mktemp -d)"
 trap "rm -rf \"$TD\"" EXIT
+python3 -m pip wheel --no-deps -w "$TD" "$PROJECT_DIR"/py
 python3 -m pip wheel --no-deps -w "$TD" "$PROJECT_DIR"/py-gui
-
 TD2="$(ssh "$HOST" mktemp -d)"
 scp "$TD"/*.whl "$HOST:$TD2"
+
+scp "$SCRIPT_DIR/config.yaml" "$HOST:$HOST_CONFIG"
 
 ssh "$HOST" sh <<EOF
 set -e
 trap "rm -rf \"$TD\"" EXIT
-"$HOST_PY" -m pip uninstall -y mdns-sieve-gui
-"$HOST_PY" -m pip install -f "$TD2" mdns-sieve-gui
+"$HOST_PY" -m pip uninstall -y mdns-sieve mdns-sieve-gui
+"$HOST_PY" -m pip install -f "$TD2" mdns-sieve mdns-sieve-gui
+pkill -fe mdns_sieve.main || true
 pkill -fe mdns_sieve_gui.main || true
+nohup "$HOST_PY" -m mdns_sieve.main -c "$HOST_CONFIG" > /var/log/mdns-sieve.log 2>&1 < /dev/null &
 nohup "$HOST_PY" -m mdns_sieve_gui.main -c "$HOST_CONFIG" > /var/log/mdns-sieve-gui.log 2>&1 < /dev/null &
 EOF
