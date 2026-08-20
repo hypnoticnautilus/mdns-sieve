@@ -3,8 +3,8 @@
 name="mdns-sieve"
 description="mDNS Sieve Reflector Daemon"
 
-command="/opt/mdns-sieve/venv/bin/python3"
-command_args="-u -m mdns_sieve.main -c /opt/mdns-sieve/config.yaml"
+command="/usr/local/bin/mdns-sieve"
+command_args="--config /etc/mdns-sieve.yaml"
 command_background="yes"
 pidfile="/run/${RC_SVCNAME}.pid"
 
