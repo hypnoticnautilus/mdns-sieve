@@ -188,7 +188,7 @@ impl FilterRule {
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
-pub struct CommandServerConfig {
+pub struct WebServerConfig {
     pub enabled: bool,
     pub host: String,
     pub port: u16,
@@ -218,7 +218,7 @@ pub struct AppConfigData {
     pub rewrite_mixed_packets: bool,
     #[serde(default)]
     pub forward_known_answers: bool,
-    pub command_server: Option<CommandServerConfig>,
+    pub web_server: Option<WebServerConfig>,
     pub tracking: Option<TrackingConfig>,
     #[serde(default)]
     pub rules: Vec<FilterRuleConfig>,
@@ -230,7 +230,7 @@ pub struct AppConfig {
     pub default_action_is_forward: bool,
     pub rewrite_mixed_packets: bool,
     pub forward_known_answers: bool,
-    pub command_server: Option<CommandServerConfig>,
+    pub web_server: Option<WebServerConfig>,
     pub tracking: Option<TrackingConfig>,
     pub rules: Vec<FilterRule>,
 }
@@ -247,7 +247,7 @@ impl AppConfig {
             default_action_is_forward: cfg_data.default_action == "forward",
             rewrite_mixed_packets: cfg_data.rewrite_mixed_packets,
             forward_known_answers: cfg_data.forward_known_answers,
-            command_server: cfg_data.command_server,
+            web_server: cfg_data.web_server,
             tracking: cfg_data.tracking,
             rules,
         })

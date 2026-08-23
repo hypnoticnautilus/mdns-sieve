@@ -5,26 +5,35 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR=$(dirname "$SCRIPT_DIR")
 
-HOST="$1"
-HOST_PY="$2"
-HOST_CONFIG="$3"
+HOST="${1:-pi3.home}"
 
-TD="$(mktemp -d)"
-trap "rm -rf \"$TD\"" EXIT
-python3 -m pip wheel --no-deps -w "$TD" "$PROJECT_DIR"/py
-python3 -m pip wheel --no-deps -w "$TD" "$PROJECT_DIR"/py-gui
-TD2="$(ssh "$HOST" mktemp -d)"
-scp "$TD"/*.whl "$HOST:$TD2"
+set -x
 
-scp "$SCRIPT_DIR/config.yaml" "$HOST:$HOST_CONFIG"
+echo "Building Rust binary for deployment..."
+(cd "$PROJECT_DIR/rs" && ../cargo.sh build --release --target aarch64-unknown-linux-musl)
 
-ssh "$HOST" sh <<EOF
-set -e
-trap "rm -rf \"$TD2\"" EXIT
-"$HOST_PY" -m pip uninstall -y mdns-sieve mdns-sieve-gui
-"$HOST_PY" -m pip install -f "$TD2" mdns-sieve mdns-sieve-gui
-pkill -fe mdns_sieve.main || true
-pkill -fe mdns_sieve_gui.main || true
-rc-service mdns-sieve restart
-rc-service mdns-sieve-gui restart
+echo "Copying config..."
+scp "$SCRIPT_DIR/config.yaml" "$HOST:/etc/mdns-sieve.yaml"
+
+echo "Stopping service if running..."
+ssh "$HOST" "rc-service mdns-sieve stop || true"
+
+echo "Copying binary and setting up service..."
+scp "$PROJECT_DIR/rs/target/aarch64-unknown-linux-musl/release/mdns-sieve" "$HOST:/usr/local/bin/mdns-sieve"
+scp "$PROJECT_DIR/deploy/openrc/mdns-sieve" "$HOST:/tmp/mdns-sieve-openrc"
+
+ssh "$HOST" << 'EOF'
+  set -e
+  if [ ! -f "/etc/init.d/mdns-sieve" ]; then
+    echo "Installing OpenRC service..."
+    mv /tmp/mdns-sieve-openrc /etc/init.d/mdns-sieve
+    chmod +x /etc/init.d/mdns-sieve
+    rc-update add mdns-sieve default
+  else
+    mv /tmp/mdns-sieve-openrc /etc/init.d/mdns-sieve
+    chmod +x /etc/init.d/mdns-sieve
+  fi
+  rc-service mdns-sieve start
 EOF
+
+echo "Deployment complete!"

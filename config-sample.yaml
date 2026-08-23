@@ -19,8 +19,8 @@ rewrite_mixed_packets: false
 # If true, all known-answers in query packets are allowed to be forwarded.
 forward_known_answers: false
 
-# Configuration for the internal TCP command and statistics server.
-command_server:
+# Configuration for the internal HTTP API and Web Dashboard server.
+web_server:
   enabled: true
   host: "0.0.0.0"
   port: 8080
@@ -32,13 +32,6 @@ tracking:
   db_path: "/var/lib/mdns-sieve/responses.db"
   flush_interval_seconds: 3600
   retention_days: 7
-
-# GUI web server for monitoring and managing mDNS Sieve (Optional)
-# Specify the host and port for HTTP clients to connect to the GUI dashboard.
-# The GUI will also connect to the command_server above.
-gui_server:
-  host: "0.0.0.0"
-  port: 8080
 
 # Filtering rules are processed in order; the first matching rule wins.
 rules:

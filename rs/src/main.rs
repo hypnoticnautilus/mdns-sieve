@@ -27,15 +27,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let config_arc = Arc::new(config);
 
     let manager = Arc::new(Mutex::new(CommandServerManager::new(
-        config_arc.command_server.clone(),
+        config_arc.web_server.clone(),
         config_arc.tracking.clone(),
     )));
 
-    if let Some(cs_cfg) = &config_arc.command_server {
-        if cs_cfg.enabled {
+    if let Some(ws_cfg) = &config_arc.web_server {
+        if ws_cfg.enabled {
             let mgr_clone = manager.clone();
-            let host = cs_cfg.host.clone();
-            let port = cs_cfg.port;
+            let host = ws_cfg.host.clone();
+            let port = ws_cfg.port;
             tokio::spawn(async move {
                 run_command_server(mgr_clone, host, port).await;
             });

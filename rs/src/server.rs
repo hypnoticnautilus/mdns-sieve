@@ -1,11 +1,17 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
-use tokio::net::{TcpListener, TcpStream};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::TcpListener;
 use tokio::sync::Mutex;
+use axum::{
+    extract::{State, Query},
+    routing::{get, post},
+    Router, Json, response::{Html, IntoResponse},
+    http::{StatusCode, header},
+};
+
 use serde_json::{Value, json};
 use crate::database::{DatabaseManager, TrackedRecord};
-use crate::config::{CommandServerConfig, TrackingConfig};
+use crate::config::{WebServerConfig, TrackingConfig};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 #[derive(Debug, Clone)]
@@ -25,7 +31,7 @@ pub struct BufferKey {
 }
 
 pub struct CommandServerManager {
-    config_server: Option<CommandServerConfig>,
+    config_server: Option<WebServerConfig>,
     tracking_config: Option<TrackingConfig>,
     
     pub stats_total: u64,
@@ -40,7 +46,7 @@ pub struct CommandServerManager {
 }
 
 impl CommandServerManager {
-    pub fn new(config_server: Option<CommandServerConfig>, tracking_config: Option<TrackingConfig>) -> Self {
+    pub fn new(config_server: Option<WebServerConfig>, tracking_config: Option<TrackingConfig>) -> Self {
         let mut db_manager = None;
         let mut stats_total = 0;
         let mut stats_forwarded = 0;
@@ -435,53 +441,89 @@ impl CommandServerManager {
 }
 
 pub async fn run_command_server(manager: Arc<Mutex<CommandServerManager>>, host: String, port: u16) {
-    let listener = match TcpListener::bind(format!("{}:{}", host, port)).await {
+    let app = Router::new()
+        .route("/", get(serve_index))
+        .route("/index.html", get(serve_index))
+        .route("/app.js", get(serve_app_js))
+        .route("/style.css", get(serve_style_css))
+        .route("/favicon.svg", get(serve_favicon))
+        .route("/api/stats", get(api_stats))
+        .route("/api/hosts", get(api_hosts))
+        .route("/api/names", get(api_names))
+        .route("/api/host_details", get(api_host_details))
+        .route("/api/clear", post(api_clear))
+        .with_state(manager);
+
+    let addr = format!("{}:{}", host, port);
+    let listener = match TcpListener::bind(&addr).await {
         Ok(l) => l,
         Err(e) => {
-            eprintln!("Failed to bind TCP Command Server: {}", e);
+            eprintln!("Failed to bind Web Server: {}", e);
             return;
         }
     };
-
-    loop {
-        if let Ok((mut socket, _)) = listener.accept().await {
-            let manager_clone = manager.clone();
-            tokio::spawn(async move {
-                let mut buffer = Vec::new();
-                let mut read_buf = [0u8; 1024];
-
-                loop {
-                    match socket.read(&mut read_buf).await {
-                        Ok(0) => break,
-                        Ok(n) => {
-                            buffer.extend_from_slice(&read_buf[..n]);
-                            if buffer.len() > 4096 {
-                                break;
-                            }
-
-                            while let Some(pos) = buffer.iter().position(|&b| b == b'\0') {
-                                let cmd_bytes: Vec<u8> = buffer.drain(..pos).collect();
-                                buffer.remove(0); // remove the null byte
-
-                                if let Ok(cmd_str) = String::from_utf8(cmd_bytes) {
-                                    if let Ok(payload) = serde_json::from_str::<Value>(&cmd_str) {
-                                        let mut mgr = manager_clone.lock().await;
-                                        let response = mgr.process_command(&payload);
-                                        drop(mgr); // Release lock immediately
-
-                                        if let Ok(resp_str) = serde_json::to_string(&response) {
-                                            let mut out = resp_str.into_bytes();
-                                            out.push(b'\0');
-                                            let _ = socket.write_all(&out).await;
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                        Err(_) => break,
-                    }
-                }
-            });
-        }
+    
+    println!("Web GUI listening on http://{}", addr);
+    if let Err(e) = axum::serve(listener, app).await {
+        eprintln!("Web server error: {}", e);
     }
 }
+
+async fn serve_index() -> impl IntoResponse {
+    Html(include_str!("../static/index.html"))
+}
+
+async fn serve_app_js() -> impl IntoResponse {
+    ([(header::CONTENT_TYPE, "application/javascript")], include_str!("../static/app.js"))
+}
+
+async fn serve_style_css() -> impl IntoResponse {
+    ([(header::CONTENT_TYPE, "text/css")], include_str!("../static/style.css"))
+}
+
+async fn serve_favicon() -> impl IntoResponse {
+    ([(header::CONTENT_TYPE, "image/svg+xml")], include_str!("../static/favicon.svg"))
+}
+
+async fn api_stats(State(manager): State<Arc<Mutex<CommandServerManager>>>) -> Json<Value> {
+    let mut mgr = manager.lock().await;
+    Json(mgr.process_command(&json!({"command": "stats"})))
+}
+
+async fn api_hosts(State(manager): State<Arc<Mutex<CommandServerManager>>>) -> Json<Value> {
+    let mut mgr = manager.lock().await;
+    Json(mgr.process_command(&json!({"command": "hosts"})))
+}
+
+async fn api_names(State(manager): State<Arc<Mutex<CommandServerManager>>>) -> Json<Value> {
+    let mut mgr = manager.lock().await;
+    Json(mgr.process_command(&json!({"command": "names"})))
+}
+
+#[derive(serde::Deserialize)]
+pub struct HostDetailsQuery {
+    ip: String,
+}
+
+async fn api_host_details(
+    State(manager): State<Arc<Mutex<CommandServerManager>>>,
+    Query(query): Query<HostDetailsQuery>,
+) -> Json<Value> {
+    let mut mgr = manager.lock().await;
+    Json(mgr.process_command(&json!({"command": "host_details", "ip": query.ip})))
+}
+
+#[derive(serde::Deserialize)]
+pub struct ClearCommandBody {
+    #[serde(default)]
+    clear_tracking: bool,
+}
+
+async fn api_clear(
+    State(manager): State<Arc<Mutex<CommandServerManager>>>,
+    axum::extract::Json(body): axum::extract::Json<ClearCommandBody>,
+) -> Json<Value> {
+    let mut mgr = manager.lock().await;
+    Json(mgr.process_command(&json!({"command": "clear", "clear_tracking": body.clear_tracking})))
+}
+
