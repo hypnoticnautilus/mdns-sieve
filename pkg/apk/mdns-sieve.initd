@@ -3,7 +3,7 @@
 name="mdns-sieve"
 description="mDNS Sieve Reflector Daemon"
 
-command="/usr/local/bin/mdns-sieve"
+command="/usr/bin/mdns-sieve"
 command_args="--config /etc/mdns-sieve.yaml"
 command_background="yes"
 pidfile="/run/${RC_SVCNAME}.pid"
@@ -15,3 +15,4 @@ depend() {
 	need net
 	after firewall
 }
+
