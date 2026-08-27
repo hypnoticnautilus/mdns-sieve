@@ -30,27 +30,23 @@ IoT devices often broadcast state advertisements. Since multicast Wi-Fi frames a
 
 ---
 
-## Quick Start (Python Version)
+## Quick Start
 
-### 1. Build the wheel(s)
+The backend daemon has been completely rewritten in Rust (`rs/`) for superior performance and memory safety, embedding the web dashboard directly into the binary.
+
+### 1. Build the Binary
+If you have a local Rust toolchain installed, you can compile it natively:
 ```bash
-pip wheel --no-deps -w dist py
-pip wheel --no-deps -w dist py-gui # optional web dashboard
+cd rs/
+cargo build --release
+```
+For cross-compilation (e.g. to ARM targets like Raspberry Pi), we provide a wrapper script that uses Docker:
+```bash
+./rs/cargo.sh build --release --target aarch64-unknown-linux-musl
 ```
 
-This will produce to Python wheels in the `dist` directory. Transfer them to the system on which to want to run the program.
-
-### 2. Install the Wheels
-```bash
-python3 -m venv /path/to/venv
-/path/to/venv/bin/pip install -f dist/ mdns-sieve
-/path/to/venv/bin/pip install -f dist/ mdns-sieve-gui  # optional
-```
-
-A separate virtual environment is not required but is highly recommended when using the `setcap` command to allow the daemon to listen for mDNS packets. See below.
-
-### 3. Configure mdns-sieve
-Create a `config.yaml` file to define your active interfaces, rules, tracking options, and command server options. Example:
+### 2. Configure mdns-sieve
+Create a `config.yaml` file to define your active interfaces, rules, tracking options, and web server options. Example:
 ```yaml
 interfaces:
   - eth0   # Trusted LAN
@@ -75,36 +71,28 @@ tracking:
   flush_interval_seconds: 5
   retention_days: 7
 
-# Control server for GUI dashboard connection
-command_server:
+# Embedded Web GUI / JSON API
+web_server:
   enabled: true
-  host: "127.0.0.1"
-  port: 5354
+  host: "0.0.0.0"
+  port: 8080
 ```
 
-### 4. Run the Daemon
+### 3. Run the Daemon
 The daemon requires the `CAP_NET_RAW` capability to bind sockets to specific network interfaces using `SO_BINDTODEVICE`.
 
-You can grant this capability to the virtual environment's Python binary using `setcap` to run the daemon without root privileges:
+You can grant this capability to the compiled binary using `setcap` to run without root privileges:
 ```bash
-# Warning: do not do this for your system Python executable (/usr/bin/python) or for shared virtual environments.
-sudo setcap cap_net_raw+ep /path/to/venv/bin/python3
-/path/to/venv/bin/mdns-sieve --config config.yaml [-v[v]]
+sudo setcap cap_net_raw+ep rs/target/release/mdns-sieve
+./rs/target/release/mdns-sieve --config config.yaml
 ```
 
 Alternatively, you can run the daemon directly using `sudo`:
 ```bash
-sudo /path/to/venv/bin/mdns-sieve --config config.yaml [-v[v]]
+sudo ./rs/target/release/mdns-sieve --config config.yaml
 ```
-* Use `-v` to log dropped packets.
-* Use `-vv` to log both dropped packets and successfully forwarded packets.
 
-
-### 5. (Optional) Run the Web GUI
-Start the GUI server:
-```bash
-/path/to/venv/bin/mdns-sieve-gui --daemon-host 127.0.0.1 --daemon-port 5354 --port 8080
-```
+### 4. Access the Web GUI
 Open `http://your_server:8080` in your browser to access the dashboard.
 
 ---
@@ -152,15 +140,12 @@ GUI controls allowing users to reset dashboard counters and purge SQLite trackin
 ## Project Structure
 
 This repository is organized as follows:
-* `py/` — Python 3.10+ package.
-  * `src/mdns_sieve/mdns_parser.py` — Custom binary mDNS parser with recursion pointer protection.
-  * `src/mdns_sieve/config.py` — YAML configuration rule validation and matching engine.
-  * `src/mdns_sieve/reflector.py` — Linux `SO_BINDTODEVICE` isolated sockets and recovery event loop.
-  * `src/mdns_sieve/database.py` — SQLite DatabaseManager for metrics persistence and automated pruning.
-  * `src/mdns_sieve/command_server.py` — TCP API command server providing stats, hosts activity, and domain metrics.
-  * `src/mdns_sieve/main.py` — CLI entrypoint, logging levels, and signal handling.
-  * `tests/` — Mock-based unit and integration test suite.
-* `py-gui/` — Dashboard Web GUI and HTTP control server (Python 3.10+).
-  * `src/mdns_sieve_gui/main.py` — HTTP dashboard server and proxy handler to the backend reflector TCP socket.
-  * `src/mdns_sieve_gui/static/` — Static HTML, CSS (Vanilla CSS dark/light mode), and Javascript (Vanilla JS with Sparkline graphs and Lucide icons).
-  * `tests/` — Integration and unit test suite for the dashboard.
+* `rs/` — Rust package (Core reflector daemon, internal JSON API, and Web GUI).
+  * `src/mdns/` — Custom binary mDNS parser with recursion pointer protection.
+  * `src/config.rs` — YAML configuration rule validation and matching engine.
+  * `src/reflector.rs` — Linux `SO_BINDTODEVICE` isolated sockets and recovery event loop.
+  * `src/database.rs` — SQLite DatabaseManager for metrics persistence and automated pruning.
+  * `src/server.rs` — `axum` HTTP server providing stats, hosts activity, domain metrics, and the Web GUI.
+  * `src/main.rs` — CLI entrypoint, configuration loading, and signal handling.
+* `pkg/apk/` — Alpine Linux packaging scripts and Docker build environments.
+* `py/` & `py-gui/` — Legacy Python versions of the daemon and GUI (deprecated).
