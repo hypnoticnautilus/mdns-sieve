@@ -16,9 +16,16 @@ The project is built using Cargo in the `rs/` directory. Alpine APKs are package
 # Compile Rust binary dynamically for target arch (using messense/rust-musl-cross)
 ./rs/cargo.sh build --release --target <target-triple>
 
-# Package APKs using Docker
-./pkg/apk/docker_build.sh -a <architecture> -o <output-dir> <path-to-binary>
+# Package APKs using Docker (supports optional -k <private-key> for abuild signing)
+./pkg/apk/docker_build.sh [-k <path-to-privkey>] -a <architecture> -o <output-dir> <path-to-binary>
 ```
+
+### GitHub Actions CI / Release
+Automated cross-compilation and Alpine packaging workflows are defined in `.github/workflows/build.yml`.
+- Builds packages for `x86_64` and `aarch64` architectures.
+- Triggered manually via `workflow_dispatch` or on version tags (`v*`).
+- Generates Draft GitHub Releases when a tag is pushed.
+- Uses `PACKAGING_RSA_KEY` secret if configured in GitHub repository secrets, falling back to ephemeral keys if omitted.
 
 ### Deployment
 Use the local deployment script to push updates to target hosts (e.g., Alpine on Raspberry Pi). This script detects remote host architecture, automatically compiles and packages via Docker, generates a signed index, and installs via Alpine's local repository feature over SSH.

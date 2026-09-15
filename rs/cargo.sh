@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # Wrapper to run cargo inside a docker container without installing Rust locally
 set -e
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "$SCRIPT_DIR"
 
 IMAGE="rust:1.85-slim"
 DOCKER_ENV=()

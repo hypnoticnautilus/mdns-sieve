@@ -4,19 +4,21 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 OUTPUT_DIR="$(pwd)"
 ARCH=""
+KEY_FILE=""
 
 usage() {
-    echo "Usage: $0 [-a arch] [-o outdir] <path-to-binary>"
+    echo "Usage: $0 [-a arch] [-o outdir] [-k privkey] <path-to-binary>"
     exit 1
 }
 
 # Parse options using getopts
-while getopts "a:o:h" opt; do
+while getopts "a:o:k:h" opt; do
     case "$opt" in
         a) ARCH="$OPTARG" ;;
         o) OUTPUT_DIR="$OPTARG" ;;
+        k) KEY_FILE="$OPTARG" ;;
         h)
-            echo "Usage: $0 [-a arch] [-o outdir] <path-to-binary>"
+            echo "Usage: $0 [-a arch] [-o outdir] [-k privkey] <path-to-binary>"
             exit 0
             ;;
         *) usage ;;
@@ -67,7 +69,21 @@ mkdir -p /etc/doas.d
 echo 'permit nopass :abuild' > /etc/doas.d/abuild.conf
 
 # Setup abuild key
-su builder -c 'abuild-keygen -a -i -n'
+if [ -n "$KEY_FILE" ] && [ -f "$KEY_FILE" ]; then
+    echo "Using provided RSA signing key: $KEY_FILE"
+    mkdir -p /home/builder/.abuild
+    KEY_NAME="mdns-sieve-packaging"
+    cp "$KEY_FILE" "/home/builder/.abuild/${KEY_NAME}.rsa"
+    chmod 600 "/home/builder/.abuild/${KEY_NAME}.rsa"
+    openssl rsa -in "/home/builder/.abuild/${KEY_NAME}.rsa" -pubout -out "/home/builder/.abuild/${KEY_NAME}.rsa.pub"
+    mkdir -p /etc/apk/keys
+    cp "/home/builder/.abuild/${KEY_NAME}.rsa.pub" /etc/apk/keys/
+    echo "PACKAGER_PRIVKEY=\"/home/builder/.abuild/${KEY_NAME}.rsa\"" > /home/builder/.abuild/abuild.conf
+    chown -R builder:abuild /home/builder/.abuild
+else
+    echo "Generating ephemeral RSA signing key..."
+    su builder -c 'abuild-keygen -a -i -n'
+fi
 
 # Fix permissions on package workspace for builder user
 chown -R builder:abuild "$SCRIPT_DIR"
