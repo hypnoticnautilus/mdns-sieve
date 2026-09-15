@@ -2,6 +2,8 @@ name: Build and Release Packages
 
 on:
   push:
+    branches:
+      - git-action
     tags:
       - 'v*'
   workflow_dispatch:
