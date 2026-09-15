@@ -1,0 +1,59 @@
+# mdns-sieve Configuration File
+# This file defines how mDNS packets are filtered and routed between interfaces.
+
+# List of physical network interfaces available on the system.
+interfaces:
+  - eth0
+  - wlan0
+  - br0
+
+# The default action to take if no rules match a packet ("forward" or "drop").
+default_action: "forward"
+
+# Whether to rewrite packets that contain both questions and answers (default: false).
+rewrite_mixed_packets: false
+
+# Whether to forward known-answers in query packets.
+# If false (default), the daemon uses two-way rule checks to strip known-answers
+# that would leak service details to isolated subnets.
+# If true, all known-answers in query packets are allowed to be forwarded.
+forward_known_answers: false
+
+# Configuration for the internal HTTP API and Web Dashboard server.
+web_server:
+  enabled: true
+  host: "0.0.0.0"
+  port: 8080
+
+# Configuration for tracking host-specific history in a local database.
+tracking:
+  enabled: true
+  max_records: 1000
+  db_path: "/var/lib/mdns-sieve/responses.db"
+  flush_interval_seconds: 3600
+  retention_days: 7
+
+# Filtering rules are processed in order; the first matching rule wins.
+rules:
+  # Example 1: Forward specific local services from eth0 to any destination
+  - action: "forward"
+    src: "eth0"
+    dst: "*"
+    services: 
+      - "*.local"
+      - "home.*"
+    hosts: ["device1.local", "printer.lan"]
+    section: "any"
+
+  # Example 2: Drop specific answer packets from the wireless network
+  - action: "drop"
+    src: "wlan0"
+    dst: "*"
+    section: "answers"
+
+  # Example 3: Only forward questions for a specific local domain
+  - action: "forward"
+    src: "*"
+    dst: "br0"
+    services: ["internal.corp"]
+    section: "questions"

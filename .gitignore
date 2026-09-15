@@ -216,3 +216,8 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Local configuration files
+config.yaml
+
+.cargo_cache

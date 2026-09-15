@@ -1,0 +1,22 @@
+# Maintainer:
+pkgname="mdns-sieve"
+pkgver="0.1.0"
+pkgrel=0
+pkgdesc="mDNS Sieve Reflector Daemon"
+url="https://github.com/hypnoticnautilus/mdns-sieve"
+arch="all"
+license="MIT"
+subpackages="$pkgname-openrc"
+options="!check !strip !tracedeps"
+
+build() {
+    return 0
+}
+
+package() {
+    mkdir -p "$pkgdir"/usr/bin
+    install -Dm755 "$startdir"/mdns-sieve "$pkgdir"/usr/bin/mdns-sieve
+
+    mkdir -p "$pkgdir"/etc/init.d
+    install -Dm755 "$startdir"/mdns-sieve.initd "$pkgdir"/etc/init.d/mdns-sieve
+}
