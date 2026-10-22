@@ -3,33 +3,97 @@ let currentTheme = localStorage.getItem('theme') || 'system';
 let autoRefreshInterval = parseInt(localStorage.getItem('refreshInterval') || '8', 10);
 let chartWindowSize = parseInt(localStorage.getItem('chartWindow') || '30', 10);
 let refreshTimer = null;
-let currentTab = 'forwarded_queries';
 let lastStatsData = null;
-
-// Active hosts sorting state
-let hostsSortCol = 'packets';
-let hostsSortDir = 'desc';
-let latestHostsData = {};
+let knownInterfaces = new Set();
 
 // Sieve daemon details (updated dynamically from API responses)
-
 let daemonCommit = '-';
 let guiCommit = '-';
 let daemonVersion = '-';
 let guiVersion = '-';
 
-// Cache stats for domain filtering
-let fwdQueriesCache = {};
-let fwdResponsesCache = {};
-let dropQueriesCache = {};
-let dropResponsesCache = {};
-let expandedDomains = new Set();
-
 // Chart.js Instances
 let mainChart = null;
 let sparklines = {};
 
-// Shorten long service names by ellipsizing leading parts while preserving last 3 components (family)
+// Enum & DNS Type Helpers
+function dnsTypeToString(t) {
+  switch (t) {
+    case 1: return 'A';
+    case 2: return 'NS';
+    case 5: return 'CNAME';
+    case 6: return 'SOA';
+    case 12: return 'PTR';
+    case 15: return 'MX';
+    case 16: return 'TXT';
+    case 28: return 'AAAA';
+    case 33: return 'SRV';
+    case 47: return 'NSEC';
+    case 255: return 'ANY';
+    default: return `TYPE(${t})`;
+  }
+}
+
+function dnsClassToString(c) {
+  switch (c) {
+    case 1: return 'IN';
+    case 255: return 'ANY';
+    default: return `CLASS(${c})`;
+  }
+}
+
+function sectionToString(s) {
+  switch (s) {
+    case 0: return 'Question';
+    case 1: return 'Answer';
+    case 2: return 'Authority';
+    case 3: return 'Additional';
+    default: return 'Unknown';
+  }
+}
+
+function packetTypeInfo(pt) {
+  if (pt === 1) {
+    return { css: 'response', label: 'Response' };
+  }
+  return { css: 'query', label: 'Query' };
+}
+
+function dispositionInfo(disp, fwdStr, dropStr) {
+  const fwd = (fwdStr || '').split(',').map(s => s.trim()).filter(Boolean);
+  const drop = (dropStr || '').split(',').map(s => s.trim()).filter(Boolean);
+
+  let label = 'Dropped';
+  let cssClass = 'dropped';
+
+  if (disp === 1) {
+    label = 'Forwarded';
+    cssClass = 'forwarded';
+  } else if (disp === 2) {
+    label = 'Partially Forwarded';
+    cssClass = 'partially-forwarded';
+  }
+
+  let details = [];
+  if (fwd.length > 0) {
+    details.push(`forwarded: ${fwd.join(', ')}`);
+  }
+  if (drop.length > 0) {
+    details.push(`dropped: ${drop.join(', ')}`);
+  }
+
+  const tooltip = details.length > 0 ? `${label} (${details.join(' | ')})` : label;
+  return { label, cssClass, tooltip };
+}
+
+function renderDispositionDot(disp, fwdStr, dropStr, small = false) {
+  const info = dispositionInfo(disp, fwdStr, dropStr);
+  const sizeClass = small ? ' sm' : '';
+  const escapedTooltip = escapeHtml(info.tooltip);
+  return `<span class="disp-dot ${info.cssClass}${sizeClass}" title="${escapedTooltip}" data-tooltip="${escapedTooltip}"></span>`;
+}
+
+// Shorten long service names by ellipsizing leading parts while preserving last 3 components
 function shortenServiceName(name) {
   if (!name) return name;
   const parts = name.split('.');
@@ -49,13 +113,9 @@ function shortenServiceName(name) {
 
 // Initialize application on load
 window.addEventListener('DOMContentLoaded', () => {
-  // Setup Lucide icons
   lucide.createIcons();
-
-  // Setup Theme Event Listeners
   initTheme();
 
-  // Setup Auto-Refresh Toggle Event Listener
   const autoRefreshToggle = document.getElementById('autoRefreshToggle');
   autoRefreshToggle.addEventListener('change', (e) => {
     if (e.target.checked) {
@@ -65,18 +125,13 @@ window.addEventListener('DOMContentLoaded', () => {
     }
   });
 
-  // Setup Charts
   initCharts();
-
-  // Initial Data Fetch
   refreshData();
 
-  // Start polling if enabled
   if (autoRefreshToggle.checked) {
     startAutoRefresh();
   }
 
-  // Setup Modal Background Click Listeners
   document.querySelectorAll('.modal-overlay').forEach(overlay => {
     overlay.addEventListener('click', (e) => {
       if (e.target === overlay) {
@@ -104,7 +159,6 @@ function initTheme() {
 
   applyTheme(currentTheme);
 
-  // Listen for system theme changes if set to system
   window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => {
     if (currentTheme === 'system') {
       applyTheme('system');
@@ -126,7 +180,6 @@ function applyTheme(theme) {
 
   document.documentElement.setAttribute('data-theme', activeTheme);
 
-  // Update theme button icon
   const icon = document.getElementById('themeIcon');
   if (activeTheme === 'dark') {
     icon.setAttribute('data-lucide', 'moon');
@@ -143,14 +196,11 @@ function toggleModal(modalId, show) {
   const modal = document.getElementById(modalId);
   if (show) {
     modal.classList.remove('hidden');
-    // Pre-populate input values for Settings modal
     if (modalId === 'settingsModal') {
       document.getElementById('setRefreshInterval').value = autoRefreshInterval;
       document.getElementById('setChartWindow').value = chartWindowSize;
     }
-    // Update daemon configuration details for Info modal
     if (modalId === 'infoModal') {
-
       document.getElementById('infoDaemonVersion').textContent = `${daemonVersion} (${daemonCommit})`;
       document.getElementById('infoGuiVersion').textContent = `${guiVersion} (${guiCommit})`;
     }
@@ -167,7 +217,6 @@ async function copyToClipboard(text, btn, event) {
     if (navigator.clipboard && navigator.clipboard.writeText) {
       await navigator.clipboard.writeText(text);
     } else {
-      // Fallback for non-secure HTTP contexts where navigator.clipboard is disabled
       const textarea = document.createElement('textarea');
       textarea.value = text;
       textarea.style.position = 'fixed';
@@ -216,13 +265,11 @@ function saveSettings() {
 
   toggleModal('settingsModal', false);
 
-  // Restart refresh interval with new rate
   if (document.getElementById('autoRefreshToggle').checked) {
     stopAutoRefresh();
     startAutoRefresh();
   }
 
-  // Update main chart window sizes
   if (mainChart) {
     updateChartWindow();
   }
@@ -244,21 +291,52 @@ function stopAutoRefresh() {
 }
 
 /* ==========================================================================
-   HTTP API Proxy Requests
+   HTTP API Requests
    ========================================================================== */
 async function fetchApi(endpoint, options = {}) {
-  try {
-    const res = await fetch(endpoint, options);
-    if (!res.ok) {
-      throw new Error(`HTTP ${res.status}: ${res.statusText}`);
-    }
-    const data = await res.json();
-    if (data.status === 'error') {
-      throw new Error(data.error || 'Server reported API error');
-    }
-    return data;
-  } catch (err) {
-    throw err;
+  const res = await fetch(endpoint, options);
+  if (!res.ok) {
+    throw new Error(`HTTP ${res.status}: ${res.statusText}`);
+  }
+  const data = await res.json();
+  if (data.status === 'error') {
+    throw new Error(data.error || 'Server reported API error');
+  }
+  return data;
+}
+
+function updateInterfaceDropdowns(interfacesList) {
+  if (!Array.isArray(interfacesList)) return;
+  interfacesList.forEach(iface => {
+    if (iface && iface.trim()) knownInterfaces.add(iface.trim());
+  });
+
+  const sorted = Array.from(knownInterfaces).sort();
+
+  const srcSelect = document.getElementById('historyInterfaceFilter');
+  if (srcSelect) {
+    const currentVal = srcSelect.value;
+    srcSelect.innerHTML = '<option value="">All Ingress Interfaces</option>';
+    sorted.forEach(iface => {
+      const opt = document.createElement('option');
+      opt.value = iface;
+      opt.textContent = `Ingress: ${iface}`;
+      if (iface === currentVal) opt.selected = true;
+      srcSelect.appendChild(opt);
+    });
+  }
+
+  const dstSelect = document.getElementById('historyDstInterfaceFilter');
+  if (dstSelect) {
+    const currentVal = dstSelect.value;
+    dstSelect.innerHTML = '<option value="">All Destination Interfaces</option>';
+    sorted.forEach(iface => {
+      const opt = document.createElement('option');
+      opt.value = iface;
+      opt.textContent = `Forwarded To: ${iface}`;
+      if (iface === currentVal) opt.selected = true;
+      dstSelect.appendChild(opt);
+    });
   }
 }
 
@@ -267,30 +345,25 @@ async function refreshData() {
   if (refreshBtn) refreshBtn.disabled = true;
 
   try {
-    // 1. Fetch Stats
     const statsRes = await fetchApi('/api/stats');
     updateStats(statsRes.data);
     hideOfflineOverlay();
 
-    // Update daemon metadata from connection config info
+    if (statsRes.interfaces) {
+      updateInterfaceDropdowns(statsRes.interfaces);
+    }
     if (statsRes.commit) daemonCommit = statsRes.commit;
     if (statsRes.gui_commit) guiCommit = statsRes.gui_commit;
     if (statsRes.version) daemonVersion = statsRes.version;
     if (statsRes.gui_version) guiVersion = statsRes.gui_version;
 
-    // 2. Fetch Hosts
-    const hostsRes = await fetchApi('/api/hosts');
-    updateHosts(hostsRes.data);
+    if (currentMainView === 'history') {
+      await loadHistoryData(currentHistoryPage, true);
+    }
 
-    // 3. Fetch Names
-    const namesRes = await fetchApi('/api/names');
-    updateDomains(namesRes.data);
-
-    // Update Info connection details
     const statusLabel = document.getElementById('infoDaemonStatus');
     statusLabel.textContent = 'Online';
     statusLabel.className = 'status-indicator online';
-
   } catch (err) {
     showOfflineOverlay(err.message);
     const statusLabel = document.getElementById('infoDaemonStatus');
@@ -311,336 +384,30 @@ function hideOfflineOverlay() {
 }
 
 /* ==========================================================================
-   Dashboard Data Updates & Renderers
+   Dashboard Data Updates & Chart Renderers
    ========================================================================== */
 function updateStats(data) {
   const totalEl = document.getElementById('valTotal');
   const forwardedEl = document.getElementById('valForwarded');
+  const partialEl = document.getElementById('valPartiallyForwarded');
   const droppedEl = document.getElementById('valDropped');
-  const rewrittenEl = document.getElementById('valRewritten');
 
-  totalEl.textContent = data.total.toLocaleString();
-  forwardedEl.textContent = data.forwarded.toLocaleString();
-  droppedEl.textContent = data.dropped.toLocaleString();
-  rewrittenEl.textContent = data.rewritten.toLocaleString();
+  const total = data.total || 0;
+  const forwarded = data.forwarded || 0;
+  const partiallyForwarded = data.partially_forwarded || 0;
+  const dropped = data.dropped || 0;
 
-  // Draw or update charts
-  updateChartsData(data);
+  totalEl.textContent = total.toLocaleString();
+  forwardedEl.textContent = forwarded.toLocaleString();
+  partialEl.textContent = partiallyForwarded.toLocaleString();
+  droppedEl.textContent = dropped.toLocaleString();
 
-  lastStatsData = data;
+  updateChartsData({ total, forwarded, partially_forwarded: partiallyForwarded, dropped });
+  lastStatsData = { total, forwarded, partially_forwarded: partiallyForwarded, dropped };
 }
 
-function updateHosts(data) {
-  latestHostsData = data || {};
-  renderHostsTable();
-}
-
-function setHostsSort(col) {
-  if (hostsSortCol === col) {
-    hostsSortDir = hostsSortDir === 'asc' ? 'desc' : 'asc';
-  } else {
-    hostsSortCol = col;
-    hostsSortDir = (col === 'packets' || col === 'last_seen') ? 'desc' : 'asc';
-  }
-  renderHostsTable();
-}
-
-function filterHosts() {
-  renderHostsTable();
-}
-
-function renderHostsTable() {
-  const tbody = document.getElementById('hostsTableBody');
-  if (!tbody) return;
-
-  const queryInput = document.getElementById('hostSearch');
-  const query = queryInput ? queryInput.value.toLowerCase().trim() : '';
-
-  let hosts = Object.entries(latestHostsData);
-  if (query) {
-    hosts = hosts.filter(([ip, info]) => {
-      const matchIp = ip.toLowerCase().includes(query);
-      const matchIface = info.last_interface && info.last_interface.toLowerCase().includes(query);
-      return matchIp || matchIface;
-    });
-  }
-  
-  // Update sort icons in table headers
-  const cols = ['ip', 'interface', 'packets', 'status', 'last_seen'];
-  cols.forEach(c => {
-    const iconSpan = document.getElementById(`sortIcon-${c}`);
-    if (iconSpan) {
-      if (hostsSortCol === c) {
-        iconSpan.textContent = hostsSortDir === 'asc' ? ' ▲' : ' ▼';
-        iconSpan.style.opacity = '1';
-      } else {
-        iconSpan.textContent = '';
-        iconSpan.style.opacity = '0.3';
-      }
-    }
-  });
-
-  if (hosts.length === 0) {
-    tbody.innerHTML = `<tr><td colspan="5" class="table-empty">${query ? 'No matching hosts discovered.' : 'No active hosts discovered.'}</td></tr>`;
-    return;
-  }
-
-  const nowSecs = Date.now() / 1000;
-
-  hosts.sort((a, b) => {
-    let valA, valB;
-    if (hostsSortCol === 'ip') {
-      valA = a[0];
-      valB = b[0];
-    } else if (hostsSortCol === 'interface') {
-      valA = a[1].last_interface;
-      valB = b[1].last_interface;
-    } else if (hostsSortCol === 'packets') {
-      valA = a[1].packets_sent;
-      valB = b[1].packets_sent;
-    } else if (hostsSortCol === 'status') {
-      const elapsedA = nowSecs - a[1].last_seen_time;
-      const elapsedB = nowSecs - b[1].last_seen_time;
-      valA = elapsedA < 60 ? 1 : 0;
-      valB = elapsedB < 60 ? 1 : 0;
-    } else if (hostsSortCol === 'last_seen') {
-      valA = a[1].last_seen_time;
-      valB = b[1].last_seen_time;
-    }
-
-    if (typeof valA === 'string') {
-      return hostsSortDir === 'asc' 
-        ? valA.localeCompare(valB) 
-        : valB.localeCompare(valA);
-    } else {
-      return hostsSortDir === 'asc'
-        ? valA - valB
-        : valB - valA;
-    }
-  });
-
-  tbody.innerHTML = '';
-  hosts.forEach(([ip, info]) => {
-    const elapsed = nowSecs - info.last_seen_time;
-    const isActive = elapsed < 60;
-    const statusText = isActive ? 'Active' : 'Idle';
-    const statusClass = isActive ? 'active' : 'idle';
-
-    let relativeActive = '';
-    if (elapsed < 1) {
-      relativeActive = 'Just now';
-    } else if (elapsed < 60) {
-      relativeActive = `${Math.floor(elapsed)}s ago`;
-    } else if (elapsed < 3600) {
-      relativeActive = `${Math.floor(elapsed / 60)}m ago`;
-    } else {
-      relativeActive = `${Math.floor(elapsed / 3600)}h ago`;
-    }
-
-    const tr = document.createElement('tr');
-    tr.onclick = () => showHostDetails(ip);
-    tr.innerHTML = `
-      <td><strong>${ip}</strong></td>
-      <td><code>${info.last_interface}</code></td>
-      <td>${info.packets_sent.toLocaleString()}</td>
-      <td>
-        <span class="badge-status ${statusClass}">
-          <span class="status-dot"></span>
-          ${statusText}
-        </span>
-      </td>
-      <td>${relativeActive}</td>
-    `;
-    tbody.appendChild(tr);
-  });
-}
-
-let queriesCache = {};
-let responsesCache = {};
-
-function updateDomains(data) {
-  queriesCache = data.queries || {};
-  responsesCache = data.responses || {};
-
-  document.getElementById('badgeQueries').textContent = Object.keys(queriesCache).length;
-  document.getElementById('badgeResponses').textContent = Object.keys(responsesCache).length;
-
-  // Extract all unique interfaces
-  const interfaces = new Set();
-  [queriesCache, responsesCache].forEach(cache => {
-    Object.values(cache).forEach(ipData => {
-      Object.values(ipData).forEach(info => {
-        if (info.src) {
-          info.src.split(',').forEach(iface => {
-            if (iface.trim()) interfaces.add(iface.trim());
-          });
-        }
-      });
-    });
-  });
-
-  const select = document.getElementById('domainInterfaceFilter');
-  if (select) {
-    const currentValue = select.value;
-    select.innerHTML = '<option value="">All Interfaces</option>';
-    const sortedInterfaces = Array.from(interfaces).sort();
-    sortedInterfaces.forEach(iface => {
-      const option = document.createElement('option');
-      option.value = iface;
-      option.textContent = iface;
-      if (iface === currentValue) {
-        option.selected = true;
-      }
-      select.appendChild(option);
-    });
-  }
-
-  filterDomains();
-}
-
-function switchDomainTab(tab) {
-  currentTab = tab;
-  document.getElementById('tabQueries').classList.toggle('active', tab === 'queries');
-  document.getElementById('tabResponses').classList.toggle('active', tab === 'responses');
-  filterDomains();
-}
-
-function matchesFilters(info, interfaceFilter, statusFilter) {
-  const fwdInterfaces = info.fwd ? info.fwd.split(',').map(x => x.trim()).filter(Boolean) : [];
-  const dropInterfaces = info.drop ? info.drop.split(',').map(x => x.trim()).filter(Boolean) : [];
-
-  if (statusFilter === 'fwd') {
-    if (fwdInterfaces.length === 0) return false;
-  } else if (statusFilter === 'drop') {
-    if (dropInterfaces.length === 0) return false;
-  }
-
-  if (interfaceFilter) {
-    const srcInterfaces = info.src ? info.src.split(',').map(x => x.trim()).filter(Boolean) : [];
-    if (!srcInterfaces.includes(interfaceFilter)) return false;
-  }
-
-  return true;
-}
-
-function filterDomains() {
-  const query = document.getElementById('domainSearch').value.toLowerCase().trim();
-  const interfaceFilter = document.getElementById('domainInterfaceFilter') ? document.getElementById('domainInterfaceFilter').value : '';
-  const statusFilter = document.getElementById('domainStatusFilter') ? document.getElementById('domainStatusFilter').value : '';
-  
-  const listContainer = document.getElementById('domainList');
-  listContainer.innerHTML = '';
-
-  const cache = currentTab === 'responses' ? responsesCache : queriesCache;
-  const entries = Object.entries(cache);
-
-  const filtered = [];
-  entries.forEach(([name, ipData]) => {
-    if (query && !name.toLowerCase().includes(query)) {
-      return;
-    }
-
-    // Filter the ipData entries based on interface and action/status filters
-    const filteredIpEntries = Object.entries(ipData).filter(([ip, info]) => {
-      return matchesFilters(info, interfaceFilter, statusFilter);
-    });
-
-    if (filteredIpEntries.length > 0) {
-      filtered.push([name, Object.fromEntries(filteredIpEntries)]);
-    }
-  });
-
-  if (filtered.length === 0) {
-    listContainer.innerHTML = `<div class="list-empty">No matching domain statistics found.</div>`;
-    return;
-  }
-
-  // Sort domains alphabetically
-  filtered.sort((a, b) => a[0].localeCompare(b[0]));
-
-  filtered.forEach(([name, ipData]) => {
-    // ipData is { "IP": { packets, fwd, drop } }
-    const totalHits = Object.values(ipData).reduce((sum, info) => sum + info.packets, 0);
-    const isExpanded = expandedDomains.has(name);
-
-    const itemDiv = document.createElement('div');
-    itemDiv.className = `domain-item ${isExpanded ? 'open' : ''}`;
-
-    const headerDiv = document.createElement('div');
-    headerDiv.className = 'domain-header';
-    headerDiv.onclick = () => toggleDomainExpand(name);
-
-    const arrowIcon = isExpanded ? 'chevron-down' : 'chevron-right';
-    headerDiv.innerHTML = `
-      <div class="domain-name">
-        <i data-lucide="${arrowIcon}"></i>
-        <span title="${name}">${shortenServiceName(name)}</span>
-        <button class="copy-name-btn" title="Copy full name to clipboard" onclick="copyToClipboard('${name}', this, event)">
-          <i data-lucide="copy"></i>
-        </button>
-      </div>
-      <span class="domain-total-hits">${totalHits.toLocaleString()} packets</span>
-    `;
-
-    itemDiv.appendChild(headerDiv);
-
-    if (isExpanded) {
-      const detailsDiv = document.createElement('div');
-      detailsDiv.className = 'domain-details';
-
-      // Sort source IPs by packet count descending
-      const sortedIps = Object.entries(ipData).sort((a, b) => b[1].packets - a[1].packets);
-      sortedIps.forEach(([ip, info]) => {
-        const ipRow = document.createElement('div');
-        ipRow.className = 'detail-ip-row';
-        
-        let badgesHtml = '';
-        if (info.fwd) {
-           info.fwd.split(',').forEach(iface => {
-               badgesHtml += `<span class="route-badge-fwd" title="Forwarded">${iface}</span>`;
-           });
-        }
-        if (info.drop) {
-           info.drop.split(',').forEach(iface => {
-               badgesHtml += `<span class="route-badge-drop" title="Dropped">${iface}</span>`;
-           });
-        }
-
-        ipRow.innerHTML = `
-          <span>${ip}</span>
-          <div style="display: flex; gap: 8px; align-items: center;">
-            <div style="display: flex; gap: 4px;">${badgesHtml}</div>
-            <span><strong>${info.packets.toLocaleString()} packets</strong></span>
-          </div>
-        `;
-        detailsDiv.appendChild(ipRow);
-      });
-
-      itemDiv.appendChild(detailsDiv);
-    }
-
-    listContainer.appendChild(itemDiv);
-  });
-
-  lucide.createIcons();
-}
-
-function toggleDomainExpand(name) {
-  if (expandedDomains.has(name)) {
-    expandedDomains.delete(name);
-  } else {
-    expandedDomains.add(name);
-  }
-  filterDomains();
-}
-
-/* ==========================================================================
-   Chart.js Metrics Rendering
-   ========================================================================== */
 function initCharts() {
   const ctx = document.getElementById('metricsChart').getContext('2d');
-  
-  // Set fonts color dynamically based on theme
   const getGridColor = () => getComputedStyle(document.documentElement).getPropertyValue('--border-color').trim();
   const getTextColor = () => getComputedStyle(document.documentElement).getPropertyValue('--text-secondary').trim();
 
@@ -651,7 +418,7 @@ function initCharts() {
       datasets: [
         {
           label: 'Total',
-          borderColor: '#06b6d4', // Cyan
+          borderColor: '#06b6d4',
           backgroundColor: 'rgba(6, 182, 212, 0.05)',
           borderWidth: 2,
           pointRadius: 1,
@@ -662,7 +429,7 @@ function initCharts() {
         },
         {
           label: 'Forwarded',
-          borderColor: '#10b981', // Emerald
+          borderColor: '#10b981',
           backgroundColor: 'rgba(16, 185, 129, 0.02)',
           borderWidth: 2,
           pointRadius: 1,
@@ -672,9 +439,9 @@ function initCharts() {
           tension: 0.3
         },
         {
-          label: 'Dropped',
-          borderColor: '#ef4444', // Rose
-          backgroundColor: 'rgba(239, 68, 68, 0.02)',
+          label: 'Partially Forwarded',
+          borderColor: '#f59e0b',
+          backgroundColor: 'rgba(245, 158, 11, 0.02)',
           borderWidth: 2,
           pointRadius: 1,
           pointHoverRadius: 4,
@@ -683,9 +450,9 @@ function initCharts() {
           tension: 0.3
         },
         {
-          label: 'Rewritten',
-          borderColor: '#8b5cf6', // Violet
-          backgroundColor: 'rgba(139, 92, 246, 0.02)',
+          label: 'Dropped',
+          borderColor: '#ef4444',
+          backgroundColor: 'rgba(239, 68, 68, 0.02)',
           borderWidth: 2,
           pointRadius: 1,
           pointHoverRadius: 4,
@@ -700,25 +467,12 @@ function initCharts() {
       maintainAspectRatio: false,
       scales: {
         x: {
-          grid: {
-            color: getGridColor(),
-            drawBorder: false
-          },
-          ticks: {
-            color: getTextColor(),
-            font: { size: 10, family: 'Inter' }
-          }
+          grid: { color: getGridColor(), drawBorder: false },
+          ticks: { color: getTextColor(), font: { size: 10, family: 'Inter' } }
         },
         y: {
-          grid: {
-            color: getGridColor(),
-            drawBorder: false
-          },
-          ticks: {
-            color: getTextColor(),
-            font: { size: 10, family: 'Inter' },
-            precision: 0
-          }
+          grid: { color: getGridColor(), drawBorder: false },
+          ticks: { color: getTextColor(), font: { size: 10, family: 'Inter' }, precision: 0 }
         }
       },
       plugins: {
@@ -742,11 +496,10 @@ function initCharts() {
     }
   });
 
-  // Init mini sparklines for cards
   initSparkline('Total', 'sparklineTotal', '#06b6d4');
   initSparkline('Forwarded', 'sparklineForwarded', '#10b981');
+  initSparkline('PartiallyForwarded', 'sparklinePartiallyForwarded', '#f59e0b');
   initSparkline('Dropped', 'sparklineDropped', '#ef4444');
-  initSparkline('Rewritten', 'sparklineRewritten', '#8b5cf6');
 }
 
 function initSparkline(id, canvasId, color) {
@@ -784,33 +537,29 @@ function updateChartsData(data) {
 
   const timestamp = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
 
-  // Calculate deltas (rates per interval) if we have previous data
   let deltaTotal = 0;
   let deltaForwarded = 0;
+  let deltaPartial = 0;
   let deltaDropped = 0;
-  let deltaRewritten = 0;
 
   if (lastStatsData) {
     deltaTotal = Math.max(0, data.total - lastStatsData.total);
     deltaForwarded = Math.max(0, data.forwarded - lastStatsData.forwarded);
+    deltaPartial = Math.max(0, data.partially_forwarded - lastStatsData.partially_forwarded);
     deltaDropped = Math.max(0, data.dropped - lastStatsData.dropped);
-    deltaRewritten = Math.max(0, data.rewritten - lastStatsData.rewritten);
   }
 
-  // 1. Update Main Trend Chart
   mainChart.data.labels.push(timestamp);
   mainChart.data.datasets[0].data.push(deltaTotal);
   mainChart.data.datasets[1].data.push(deltaForwarded);
-  mainChart.data.datasets[2].data.push(deltaDropped);
-  mainChart.data.datasets[3].data.push(deltaRewritten);
+  mainChart.data.datasets[2].data.push(deltaPartial);
+  mainChart.data.datasets[3].data.push(deltaDropped);
 
-  // Apply chart display size limit
   if (mainChart.data.labels.length > chartWindowSize) {
     mainChart.data.labels.shift();
     mainChart.data.datasets.forEach(dataset => dataset.data.shift());
   }
 
-  // Update line grid colors based on theme switches
   const getGridColor = () => getComputedStyle(document.documentElement).getPropertyValue('--border-color').trim();
   const getTextColor = () => getComputedStyle(document.documentElement).getPropertyValue('--text-secondary').trim();
   
@@ -820,13 +569,12 @@ function updateChartsData(data) {
   mainChart.options.scales.y.ticks.color = getTextColor();
   mainChart.options.plugins.legend.labels.color = getTextColor();
 
-  mainChart.update('none'); // Update without full recalculation animations for smoothness
+  mainChart.update('none');
 
-  // 2. Update Sparklines
   updateSparklineData('Total', deltaTotal);
   updateSparklineData('Forwarded', deltaForwarded);
+  updateSparklineData('PartiallyForwarded', deltaPartial);
   updateSparklineData('Dropped', deltaDropped);
-  updateSparklineData('Rewritten', deltaRewritten);
 }
 
 function updateSparklineData(id, val) {
@@ -862,14 +610,10 @@ async function executeClearStats() {
   try {
     const res = await fetchApi('/api/clear', {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json'
-      },
+      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ clear_tracking: clearTracking })
     });
     if (res.status === 'ok') {
-      alert("Statistics successfully cleared.");
-      // Reset chart lines
       if (mainChart) {
         mainChart.data.labels = [];
         mainChart.data.datasets.forEach(dataset => dataset.data = []);
@@ -881,12 +625,8 @@ async function executeClearStats() {
       });
       lastStatsData = null;
 
-      if (clearTracking) {
-        latestHostsData = {};
-        queriesCache = {};
-        responsesCache = {};
-        renderHostsTable();
-        updateDomains({ queries: {}, responses: {} });
+      if (clearTracking && currentMainView === 'history') {
+        loadHistoryData(1);
       }
 
       refreshData();
@@ -897,96 +637,392 @@ async function executeClearStats() {
 }
 
 /* ==========================================================================
-   Host Details Modal Action Handler
+   Main View Switcher (Live Dashboard / Message History)
    ========================================================================== */
-let modalCurrentTab = 'queries';
-let modalHostQueries = [];
-let modalHostResponses = [];
+let currentMainView = 'live';
 
-function switchModalTab(tab) {
-  modalCurrentTab = tab;
-  document.getElementById('modalTabQueriesBtn').classList.toggle('active', tab === 'queries');
-  document.getElementById('modalTabResponsesBtn').classList.toggle('active', tab === 'responses');
-  renderHostDetailsTable();
+function switchMainView(view) {
+  currentMainView = view;
+  const btnLive = document.getElementById('viewBtnLive');
+  const btnHistory = document.getElementById('viewBtnHistory');
+  const viewLive = document.getElementById('liveDashboardView');
+  const viewHistory = document.getElementById('messageHistoryView');
+
+  if (view === 'live') {
+    btnLive.classList.add('active');
+    btnHistory.classList.remove('active');
+    viewLive.classList.remove('hidden');
+    viewHistory.classList.add('hidden');
+  } else {
+    btnLive.classList.remove('active');
+    btnHistory.classList.add('active');
+    viewLive.classList.add('hidden');
+    viewHistory.classList.remove('hidden');
+    loadHistoryData(currentHistoryPage);
+  }
+
+  lucide.createIcons();
 }
 
-function renderHostDetailsTable() {
-  const tbody = document.getElementById('hostDetailsTableBody');
-  const records = modalCurrentTab === 'queries' ? modalHostQueries : modalHostResponses;
-  
+/* ==========================================================================
+   Message History Logic & Rendering
+   ========================================================================== */
+let currentHistoryPage = 1;
+let totalHistoryPages = 1;
+let expandedHistoryIds = new Set();
+let currentHistoryRecords = [];
+
+function onHistoryPresetChange() {
+  const preset = document.getElementById('historyTimePreset').value;
+  const customRow = document.getElementById('historyCustomTimeRow');
+  if (preset === 'custom') {
+    customRow.classList.remove('hidden');
+  } else {
+    customRow.classList.add('hidden');
+    loadHistoryData(1);
+  }
+}
+
+function getHistoryTimeRange() {
+  const preset = document.getElementById('historyTimePreset').value;
+  const now = Date.now() / 1000;
+
+  if (preset === '15m') return { from: now - 15 * 60, to: null };
+  if (preset === '1h') return { from: now - 3600, to: null };
+  if (preset === '24h') return { from: now - 86400, to: null };
+  if (preset === '7d') return { from: now - 7 * 86400, to: null };
+  if (preset === 'all') return { from: null, to: null };
+  if (preset === 'custom') {
+    const fromVal = document.getElementById('historyTimeFrom').value;
+    const toVal = document.getElementById('historyTimeTo').value;
+    const from = fromVal ? new Date(fromVal).getTime() / 1000 : null;
+    const to = toVal ? new Date(toVal).getTime() / 1000 : null;
+    return { from, to };
+  }
+  return { from: now - 7 * 86400, to: null };
+}
+
+function resetHistoryFilters() {
+  document.getElementById('historyQuerySearch').value = '';
+  document.getElementById('historyResponseSearch').value = '';
+  document.getElementById('historySrcIpFilter').value = '';
+  document.getElementById('historyInterfaceFilter').value = '';
+  document.getElementById('historyDstInterfaceFilter').value = '';
+  document.getElementById('historyDispositionFilter').value = '';
+  document.getElementById('historyTypeFilter').value = '';
+  document.getElementById('historyTimePreset').value = '7d';
+  document.getElementById('historyCustomTimeRow').classList.add('hidden');
+  document.getElementById('historyTimeFrom').value = '';
+  document.getElementById('historyTimeTo').value = '';
+  loadHistoryData(1);
+}
+
+function historyGoToPage(page) {
+  if (page < 1 || page > totalHistoryPages) return;
+  loadHistoryData(page);
+}
+
+async function loadHistoryData(page = 1, silent = false) {
+  currentHistoryPage = page;
+  const pageSize = parseInt(document.getElementById('historyPageSize')?.value || '50', 10);
+  const querySearch = document.getElementById('historyQuerySearch')?.value.trim() || '';
+  const responseSearch = document.getElementById('historyResponseSearch')?.value.trim() || '';
+  const srcIp = document.getElementById('historySrcIpFilter')?.value.trim() || '';
+  const srcIface = document.getElementById('historyInterfaceFilter')?.value || '';
+  const dstIface = document.getElementById('historyDstInterfaceFilter')?.value || '';
+  const disposition = document.getElementById('historyDispositionFilter')?.value ?? '';
+  const packetType = document.getElementById('historyTypeFilter')?.value ?? '';
+  const { from, to } = getHistoryTimeRange();
+
+  const tbody = document.getElementById('historyTableBody');
+  if (!silent && currentHistoryRecords.length === 0) {
+    tbody.innerHTML = '<tr><td colspan="8" class="table-empty">Loading message history...</td></tr>';
+  }
+
+  let url = `/api/history?page=${page}&limit=${pageSize}`;
+  if (querySearch) url += `&query_search=${encodeURIComponent(querySearch)}`;
+  if (responseSearch) url += `&response_search=${encodeURIComponent(responseSearch)}`;
+  if (srcIp) url += `&src_ip=${encodeURIComponent(srcIp)}`;
+  if (srcIface) url += `&src_interface=${encodeURIComponent(srcIface)}`;
+  if (dstIface) url += `&dst_interface=${encodeURIComponent(dstIface)}`;
+  if (disposition !== '') url += `&disposition=${encodeURIComponent(disposition)}`;
+  if (packetType !== '') url += `&packet_type=${encodeURIComponent(packetType)}`;
+  if (from !== null && !isNaN(from)) url += `&from_time=${from}`;
+  if (to !== null && !isNaN(to)) url += `&to_time=${to}`;
+
+  try {
+    const res = await fetchApi(url);
+    const data = res.data;
+    if (data.interfaces) {
+      updateInterfaceDropdowns(data.interfaces);
+    }
+    currentHistoryRecords = data.records || [];
+    const total = data.total || 0;
+    totalHistoryPages = data.total_pages || 1;
+
+    renderHistoryTable(currentHistoryRecords, total, page, pageSize);
+  } catch (err) {
+    tbody.innerHTML = `<tr><td colspan="8" class="table-empty">Error loading history: ${escapeHtml(err.message)}</td></tr>`;
+  }
+}
+
+function escapeHtml(str) {
+  if (str === null || str === undefined) return '';
+  return String(str)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#039;');
+}
+
+function toggleHistoryExpand(recordId, e) {
+  if (e) e.stopPropagation();
+  if (expandedHistoryIds.has(recordId)) {
+    expandedHistoryIds.delete(recordId);
+  } else {
+    expandedHistoryIds.add(recordId);
+  }
+  renderHistoryTableRows();
+}
+
+function renderRoutingBadges(fwdStr, dropStr) {
+  const fwd = (fwdStr || '').split(',').map(x => x.trim()).filter(Boolean);
+  const drop = (dropStr || '').split(',').map(x => x.trim()).filter(Boolean);
+  const badges = [];
+  fwd.forEach(iface => {
+    badges.push(`<span class="route-badge-fwd" title="Forwarded to ${escapeHtml(iface)}">${escapeHtml(iface)}</span>`);
+  });
+  drop.forEach(iface => {
+    badges.push(`<span class="route-badge-drop" title="Dropped on ${escapeHtml(iface)}">${escapeHtml(iface)}</span>`);
+  });
+  if (badges.length === 0) {
+    return '<span style="color: var(--text-muted); font-size: 11px;">None</span>';
+  }
+  return badges.join(' ');
+}
+
+function renderHistoryTable(records, total, page, pageSize) {
+  const startIdx = total === 0 ? 0 : (page - 1) * pageSize + 1;
+  const endIdx = Math.min(page * pageSize, total);
+  document.getElementById('historyPaginationInfo').textContent = `Showing ${startIdx.toLocaleString()} - ${endIdx.toLocaleString()} of ${total.toLocaleString()} messages`;
+  document.getElementById('historyPageIndicator').textContent = `Page ${page} of ${totalHistoryPages}`;
+
+  document.getElementById('btnHistFirst').disabled = page <= 1;
+  document.getElementById('btnHistPrev').disabled = page <= 1;
+  document.getElementById('btnHistNext').disabled = page >= totalHistoryPages;
+  document.getElementById('btnHistLast').disabled = page >= totalHistoryPages;
+
+  renderHistoryTableRows();
+}
+
+function renderHistoryTableRows() {
+  const tbody = document.getElementById('historyTableBody');
   tbody.innerHTML = '';
-  if (records.length === 0) {
-    tbody.innerHTML = '<tr><td colspan="3" class="table-empty">No records found.</td></tr>';
+
+  if (currentHistoryRecords.length === 0) {
+    tbody.innerHTML = '<tr><td colspan="8" class="table-empty">No matching mDNS messages found.</td></tr>';
     return;
   }
-  
-  // Sort by packet count descending
-  records.sort((a, b) => b.packet_count - a.packet_count);
-  
-  records.forEach(r => {
-    let badgesHtml = '';
-    if (r.last_forwarded_interfaces) {
-      r.last_forwarded_interfaces.split(',').forEach(iface => {
-        badgesHtml += `<span class="route-badge-fwd" title="Forwarded">${iface}</span>`;
-      });
+
+  currentHistoryRecords.forEach((record, index) => {
+    const recordId = record.id !== undefined && record.id !== null ? record.id : index;
+    const isExpanded = expandedHistoryIds.has(recordId);
+    const items = Array.isArray(record.items) ? record.items : [];
+    const questions = items.filter(i => i.section === 0);
+    const rrItems = items.filter(i => i.section !== 0);
+
+    const d = new Date(record.timestamp * 1000);
+    const timeFormatted = d.toLocaleDateString() + ' ' + d.toLocaleTimeString();
+
+    const ptype = packetTypeInfo(record.packet_type);
+    const msgDotHtml = renderDispositionDot(record.disposition, record.forwarded_interfaces, record.dropped_interfaces, false);
+
+    let dstBadges = '<span style="color: var(--text-muted); font-size: 11px;">None</span>';
+    if (record.forwarded_interfaces) {
+      dstBadges = record.forwarded_interfaces.split(',').map(x => x.trim()).filter(Boolean)
+        .map(x => `<span class="route-badge-fwd" title="Forwarded to ${escapeHtml(x)}">${escapeHtml(x)}</span>`)
+        .join(' ');
     }
-    if (r.last_dropped_interfaces) {
-      r.last_dropped_interfaces.split(',').forEach(iface => {
-        badgesHtml += `<span class="route-badge-drop" title="Dropped">${iface}</span>`;
-      });
+
+    // Build inline item pills with red/yellow/green dots & tooltips
+    const maxPreviewItems = 5;
+    const previewPills = items.slice(0, maxPreviewItems).map(item => {
+      const dot = renderDispositionDot(item.disposition, item.forwarded_interfaces, item.dropped_interfaces, true);
+      const tName = dnsTypeToString(item.rr_type);
+      const prefix = item.section === 0 ? 'Q' : 'R';
+      const label = `${prefix}: ${shortenServiceName(item.name)} (${tName})`;
+      const fullTitle = item.rdata_summary
+        ? `${sectionToString(item.section)}: ${item.name} (${tName}) -> ${item.rdata_summary}`
+        : `${sectionToString(item.section)}: ${item.name} (${tName})`;
+      return `<span class="preview-item-pill">${dot}<span class="preview-item-text" title="${escapeHtml(fullTitle)}">${escapeHtml(label)}</span></span>`;
+    });
+    if (items.length > maxPreviewItems) {
+      previewPills.push(`<span class="badge" style="font-size: 11px;">+${items.length - maxPreviewItems} more</span>`);
     }
-    
+    const previewHtml = previewPills.length > 0
+      ? `<div class="preview-items-wrap">${previewPills.join('')}</div>`
+      : '<span style="color: var(--text-muted); font-size: 12px;">None</span>';
+
     const tr = document.createElement('tr');
+    tr.className = `history-row ${isExpanded ? 'expanded' : ''}`;
+    tr.onclick = (e) => toggleHistoryExpand(recordId, e);
+
     tr.innerHTML = `
       <td>
-        <div class="service-name-wrapper">
-          <strong title="${r.service_type}">${shortenServiceName(r.service_type)}</strong>
-          <button class="copy-name-btn" title="Copy full name to clipboard" onclick="copyToClipboard('${r.service_type}', this, event)">
-            <i data-lucide="copy"></i>
-          </button>
-        </div>
+        <span class="history-expand-icon">
+          <i data-lucide="${isExpanded ? 'chevron-down' : 'chevron-right'}"></i>
+        </span>
       </td>
-      <td>${r.packet_count.toLocaleString()}</td>
-      <td>
-        <div style="display: flex; gap: 4px; flex-wrap: wrap;">
-          ${badgesHtml || '<span style="color: var(--text-muted); font-size: 11px;">None</span>'}
-        </div>
-      </td>
+      <td style="text-align: center;">${msgDotHtml}</td>
+      <td title="${record.timestamp} (UNIX)">${timeFormatted}</td>
+      <td><strong>${escapeHtml(record.src_ip)}</strong></td>
+      <td><span class="badge" style="font-size: 11px;">${escapeHtml(record.src_interface)}</span></td>
+      <td><span class="badge-type ${ptype.css}">${ptype.label}</span></td>
+      <td><div style="display: flex; gap: 4px; flex-wrap: wrap;">${dstBadges}</div></td>
+      <td>${previewHtml}</td>
     `;
     tbody.appendChild(tr);
-  });
-}
 
-async function showHostDetails(ip) {
-  document.getElementById('hostDetailsTitle').textContent = `Host Details: ${ip}`;
-  
-  const content = document.getElementById('hostDetailsContent');
-  const empty = document.getElementById('hostDetailsEmpty');
-  const loading = document.getElementById('hostDetailsLoading');
-  
-  content.classList.add('hidden');
-  empty.classList.add('hidden');
-  loading.classList.remove('hidden');
-  
-  toggleModal('hostDetailsModal', true);
-  
-  try {
-    const res = await fetchApi(`/api/host_details?ip=${encodeURIComponent(ip)}`);
-    modalHostQueries = res.data.queries || [];
-    modalHostResponses = res.data.responses || [];
-    
-    loading.classList.add('hidden');
-    
-    if (modalHostQueries.length === 0 && modalHostResponses.length === 0) {
-      empty.textContent = 'No tracking data available for this host. Ensure tracking is enabled in configuration.';
-      empty.classList.remove('hidden');
-    } else {
-      content.classList.remove('hidden');
-      switchModalTab('queries');
+    if (isExpanded) {
+      const detailTr = document.createElement('tr');
+      detailTr.className = 'history-detail-tr';
+      const msgDispInfo = dispositionInfo(record.disposition, record.forwarded_interfaces, record.dropped_interfaces);
+
+      let questionsHtml = '<tr><td colspan="5" class="table-empty" style="padding: 12px 0 !important;">No questions in packet.</td></tr>';
+      if (questions.length > 0) {
+        questionsHtml = questions.map(q => {
+          const qDot = renderDispositionDot(q.disposition, q.forwarded_interfaces, q.dropped_interfaces, false);
+          const qType = dnsTypeToString(q.rr_type);
+          const qClass = dnsClassToString(q.rr_class);
+          const qRoutes = renderRoutingBadges(q.forwarded_interfaces, q.dropped_interfaces);
+          return `
+            <tr>
+              <td style="text-align: center; width: 42px;">${qDot}</td>
+              <td>
+                <div class="service-name-wrapper">
+                  <span title="${escapeHtml(q.name)}">${escapeHtml(shortenServiceName(q.name))}</span>
+                  <button class="copy-name-btn" title="Copy name" onclick="copyToClipboard('${escapeHtml(q.name)}', this, event)">
+                    <i data-lucide="copy"></i>
+                  </button>
+                </div>
+              </td>
+              <td><span class="badge-type query">${escapeHtml(qType)}</span></td>
+              <td>${escapeHtml(qClass)}</td>
+              <td><div style="display: flex; gap: 4px; flex-wrap: wrap;">${qRoutes}</div></td>
+            </tr>
+          `;
+        }).join('');
+      }
+
+      let answersHtml = '<tr><td colspan="7" class="table-empty" style="padding: 12px 0 !important;">No resource records in packet.</td></tr>';
+      if (rrItems.length > 0) {
+        answersHtml = rrItems.map(r => {
+          const rDot = renderDispositionDot(r.disposition, r.forwarded_interfaces, r.dropped_interfaces, false);
+          const secName = sectionToString(r.section);
+          const rType = dnsTypeToString(r.rr_type);
+          const rRoutes = renderRoutingBadges(r.forwarded_interfaces, r.dropped_interfaces);
+          const ttlText = r.ttl !== null && r.ttl !== undefined ? `${r.ttl}s` : '-';
+          const rdataHtml = r.rdata_summary
+            ? `<div class="service-name-wrapper">
+                 <span title="${escapeHtml(r.rdata_summary)}">${escapeHtml(shortenServiceName(r.rdata_summary))}</span>
+                 <button class="copy-name-btn" title="Copy record data" onclick="copyToClipboard('${escapeHtml(r.rdata_summary)}', this, event)">
+                   <i data-lucide="copy"></i>
+                 </button>
+               </div>`
+            : '<span style="color: var(--text-muted);">-</span>';
+
+          return `
+            <tr>
+              <td style="text-align: center; width: 42px;">${rDot}</td>
+              <td><span class="badge-section">${escapeHtml(secName)}</span></td>
+              <td>
+                <div class="service-name-wrapper">
+                  <span title="${escapeHtml(r.name)}">${escapeHtml(shortenServiceName(r.name))}</span>
+                  <button class="copy-name-btn" title="Copy name" onclick="copyToClipboard('${escapeHtml(r.name)}', this, event)">
+                    <i data-lucide="copy"></i>
+                  </button>
+                </div>
+              </td>
+              <td><span class="badge-type response">${escapeHtml(rType)}</span></td>
+              <td>${escapeHtml(ttlText)}</td>
+              <td>${rdataHtml}</td>
+              <td><div style="display: flex; gap: 4px; flex-wrap: wrap;">${rRoutes}</div></td>
+            </tr>
+          `;
+        }).join('');
+      }
+
+      detailTr.innerHTML = `
+        <td colspan="8">
+          <div class="history-detail-content">
+            <div class="routing-summary-box">
+              <div class="routing-summary-item">
+                <span class="routing-summary-label">Disposition:</span>
+                ${msgDotHtml}
+                <strong>${escapeHtml(msgDispInfo.label)}</strong>
+              </div>
+              <div class="routing-summary-item">
+                <span class="routing-summary-label">Source:</span>
+                <span><strong>${escapeHtml(record.src_ip)}</strong> on <code>${escapeHtml(record.src_interface)}</code></span>
+              </div>
+              <div class="routing-summary-item">
+                <span class="routing-summary-label">Interface Routing:</span>
+                <div style="display: flex; gap: 4px; flex-wrap: wrap;">${renderRoutingBadges(record.forwarded_interfaces, record.dropped_interfaces)}</div>
+              </div>
+              <div class="routing-summary-item">
+                <span class="routing-summary-label">Exact Timestamp:</span>
+                <code>${record.timestamp}</code>
+              </div>
+            </div>
+
+            <div class="detail-grid">
+              <div class="detail-card">
+                <div class="detail-card-title">
+                  <i data-lucide="help-circle" style="width: 14px; height: 14px;"></i>
+                  <span>Questions (${questions.length})</span>
+                </div>
+                <table class="detail-card-table">
+                  <thead>
+                    <tr>
+                      <th style="width: 42px; text-align: center;">Status</th>
+                      <th>Query Name</th>
+                      <th>Type</th>
+                      <th>Class</th>
+                      <th>Routing</th>
+                    </tr>
+                  </thead>
+                  <tbody>${questionsHtml}</tbody>
+                </table>
+              </div>
+
+              <div class="detail-card">
+                <div class="detail-card-title">
+                  <i data-lucide="database" style="width: 14px; height: 14px;"></i>
+                  <span>Resource Records (${rrItems.length})</span>
+                </div>
+                <table class="detail-card-table">
+                  <thead>
+                    <tr>
+                      <th style="width: 42px; text-align: center;">Status</th>
+                      <th>Section</th>
+                      <th>Record Name</th>
+                      <th>Type</th>
+                      <th>TTL</th>
+                      <th>Decoded Data</th>
+                      <th>Routing</th>
+                    </tr>
+                  </thead>
+                  <tbody>${answersHtml}</tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+        </td>
+      `;
+      tbody.appendChild(detailTr);
     }
-  } catch (err) {
-    loading.classList.add('hidden');
-    empty.textContent = 'Error fetching host details: ' + err.message;
-    empty.classList.remove('hidden');
-  }
+  });
+
+  lucide.createIcons();
 }

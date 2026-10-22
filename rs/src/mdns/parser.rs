@@ -1,4 +1,5 @@
 use std::collections::HashSet;
+use std::net::{Ipv4Addr, Ipv6Addr};
 use crate::mdns::packet::{DNSPacket, DNSQuestion, DNSResourceRecord, MdnsParsingError};
 
 fn resolve_pointer(data: &[u8], offset: usize, len_byte: u8, visited: &mut HashSet<usize>) -> Result<String, MdnsParsingError> {
@@ -22,8 +23,7 @@ fn resolve_pointer(data: &[u8], offset: usize, len_byte: u8, visited: &mut HashS
 
 fn parse_name_internal(data: &[u8], mut offset: usize, visited: &mut HashSet<usize>) -> Result<(String, usize), MdnsParsingError> {
     let mut labels = Vec::new();
-    let mut stepped_over_pointer = false;
-    let mut next_offset = offset;
+    let next_offset;
 
     loop {
         if offset >= data.len() {
@@ -34,10 +34,7 @@ fn parse_name_internal(data: &[u8], mut offset: usize, visited: &mut HashSet<usi
 
         if (len_byte & 0xC0) == 0xC0 {
             let sub_name = resolve_pointer(data, offset, len_byte, visited)?;
-            if !stepped_over_pointer {
-                next_offset = offset + 2;
-                stepped_over_pointer = true;
-            }
+            next_offset = offset + 2;
             if !sub_name.is_empty() {
                 labels.push(sub_name);
             }
@@ -50,9 +47,7 @@ fn parse_name_internal(data: &[u8], mut offset: usize, visited: &mut HashSet<usi
 
         if len_byte == 0 {
             offset += 1;
-            if !stepped_over_pointer {
-                next_offset = offset;
-            }
+            next_offset = offset;
             break;
         }
 
@@ -101,17 +96,74 @@ fn parse_rr(data: &[u8], mut offset: usize) -> Result<(DNSResourceRecord, usize)
     offset += rdlen;
 
     let mut target_name = None;
+    let mut rdata_summary = None;
 
-    if rtype == 12 { // PTR
-        if let Ok((parsed_target, _)) = parse_name(data, curr_offset) {
-            target_name = Some(parsed_target);
+    match rtype {
+        1 => { // A
+            if rdlen == 4 {
+                let ip = Ipv4Addr::new(rdata[0], rdata[1], rdata[2], rdata[3]);
+                rdata_summary = Some(ip.to_string());
+            }
         }
-    } else if rtype == 33 { // SRV
-        if rdlen > 6 {
-            if let Ok((parsed_target, _)) = parse_name(data, curr_offset + 6) {
+        28 => { // AAAA
+            if rdlen == 16 {
+                if let Ok(octets) = <[u8; 16]>::try_from(&rdata[0..16]) {
+                    let ip = Ipv6Addr::from(octets);
+                    rdata_summary = Some(ip.to_string());
+                }
+            }
+        }
+        12 => { // PTR
+            if let Ok((parsed_target, _)) = parse_name(data, curr_offset) {
+                rdata_summary = Some(parsed_target.clone());
                 target_name = Some(parsed_target);
             }
         }
+        2 | 5 => { // NS, CNAME
+            if let Ok((parsed_target, _)) = parse_name(data, curr_offset) {
+                rdata_summary = Some(parsed_target);
+            }
+        }
+        33 => { // SRV
+            if rdlen > 6 {
+                let priority = u16::from_be_bytes([rdata[0], rdata[1]]);
+                let weight = u16::from_be_bytes([rdata[2], rdata[3]]);
+                let port = u16::from_be_bytes([rdata[4], rdata[5]]);
+                if let Ok((parsed_target, _)) = parse_name(data, curr_offset + 6) {
+                    if priority == 0 && weight == 0 {
+                        rdata_summary = Some(format!("{}:{}", parsed_target, port));
+                    } else {
+                        rdata_summary = Some(format!("{}:{} (prio={}, weight={})", parsed_target, port, priority, weight));
+                    }
+                    target_name = Some(parsed_target);
+                }
+            }
+        }
+        16 => { // TXT
+            let mut txt_parts = Vec::new();
+            let mut pos = 0;
+            while pos < rdata.len() {
+                let slen = rdata[pos] as usize;
+                pos += 1;
+                if pos + slen > rdata.len() {
+                    break;
+                }
+                let s = String::from_utf8_lossy(&rdata[pos..pos + slen]).into_owned();
+                if !s.is_empty() {
+                    txt_parts.push(s);
+                }
+                pos += slen;
+            }
+            if !txt_parts.is_empty() {
+                rdata_summary = Some(txt_parts.join(", "));
+            }
+        }
+        47 => { // NSEC
+            if let Ok((next_domain, _)) = parse_name(data, curr_offset) {
+                rdata_summary = Some(next_domain);
+            }
+        }
+        _ => {}
     }
 
     Ok((DNSResourceRecord {
@@ -121,6 +173,7 @@ fn parse_rr(data: &[u8], mut offset: usize) -> Result<(DNSResourceRecord, usize)
         ttl,
         rdata,
         target_name,
+        rdata_summary,
     }, offset))
 }
 
@@ -177,4 +230,59 @@ pub fn parse_mdns_packet(data: &[u8]) -> Result<DNSPacket, MdnsParsingError> {
     }
 
     Ok(packet)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_rdata_summaries() {
+        let mut pkt = DNSPacket::new();
+        pkt.flags = 0x8400; // Response
+        pkt.answers.push(DNSResourceRecord {
+            name: "host.local".to_string(),
+            rtype: 1, // A
+            rclass: 1,
+            ttl: 120,
+            rdata: vec![192, 168, 1, 42],
+            target_name: None,
+            rdata_summary: None,
+        });
+        pkt.answers.push(DNSResourceRecord {
+            name: "_http._tcp.local".to_string(),
+            rtype: 12, // PTR
+            rclass: 1,
+            ttl: 4500,
+            rdata: Vec::new(),
+            target_name: Some("web._http._tcp.local".to_string()),
+            rdata_summary: None,
+        });
+        pkt.additionals.push(DNSResourceRecord {
+            name: "web._http._tcp.local".to_string(),
+            rtype: 33, // SRV
+            rclass: 1,
+            ttl: 120,
+            rdata: vec![0, 0, 0, 0, 0x1f, 0x90], // port 8080
+            target_name: Some("host.local".to_string()),
+            rdata_summary: None,
+        });
+        pkt.additionals.push(DNSResourceRecord {
+            name: "web._http._tcp.local".to_string(),
+            rtype: 16, // TXT
+            rclass: 1,
+            ttl: 4500,
+            rdata: vec![7, b'p', b'a', b't', b'h', b'=', b'/', b'a', 5, b'v', b'e', b'r', b'=', b'1'],
+            target_name: None,
+            rdata_summary: None,
+        });
+
+        let raw = pkt.serialize().unwrap();
+        let parsed = parse_mdns_packet(&raw).unwrap();
+
+        assert_eq!(parsed.answers[0].rdata_summary.as_deref(), Some("192.168.1.42"));
+        assert_eq!(parsed.answers[1].rdata_summary.as_deref(), Some("web._http._tcp.local"));
+        assert_eq!(parsed.additionals[0].rdata_summary.as_deref(), Some("host.local:8080"));
+        assert_eq!(parsed.additionals[1].rdata_summary.as_deref(), Some("path=/a, ver=1"));
+    }
 }

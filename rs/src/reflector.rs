@@ -4,10 +4,10 @@ use std::sync::Arc;
 use tokio::net::UdpSocket;
 use tokio::sync::Mutex;
 use socket2::{Socket, Domain, Type, Protocol};
-use libc;
 use crate::config::AppConfig;
 use crate::server::CommandServerManager;
-use crate::mdns::{parse_mdns_packet, DNSPacket, DNSResourceRecord, MdnsParsingError};
+use crate::mdns::{parse_mdns_packet, DNSPacket, DNSResourceRecord};
+use crate::database::{Disposition, MessageItemRecord, MessageRecord, PacketSection, PacketType};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 const MDNS_ADDR: Ipv4Addr = Ipv4Addr::new(224, 0, 0, 251);
@@ -16,6 +16,16 @@ const MDNS_PORT: u16 = 5353;
 pub struct Reflector {
     config: Arc<AppConfig>,
     manager: Arc<Mutex<CommandServerManager>>,
+}
+
+fn compute_item_disposition(fwd: &[String], drop: &[String]) -> Disposition {
+    if fwd.is_empty() {
+        Disposition::Dropped
+    } else if drop.is_empty() {
+        Disposition::Forwarded
+    } else {
+        Disposition::PartiallyForwarded
+    }
 }
 
 impl Reflector {
@@ -69,7 +79,16 @@ impl Reflector {
                 _ => continue,
             };
 
-            if let Ok(mut packet) = parse_mdns_packet(&data) {
+            if let Ok(packet) = parse_mdns_packet(&data) {
+                let total_items = packet.questions.len()
+                    + packet.answers.len()
+                    + packet.authorities.len()
+                    + packet.additionals.len();
+
+                if total_items == 0 {
+                    continue;
+                }
+
                 let mut question_names = HashSet::new();
                 for q in &packet.questions {
                     question_names.insert(q.name.clone());
@@ -83,17 +102,14 @@ impl Reflector {
                     }
                 }
 
-                if question_names.is_empty() && answer_names.is_empty() {
-                    continue;
-                }
-
                 let is_resp = packet.is_response();
                 let timestamp = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs_f64();
 
-                let mut allowed_names: HashMap<String, Vec<String>> = HashMap::new();
-                let mut disallowed_names: HashMap<String, Vec<String>> = HashMap::new();
-
-                let mut mgr = self.manager.lock().await;
+                // Per-item forwarded and dropped destination interface lists
+                let mut q_routing: Vec<(Vec<String>, Vec<String>)> = vec![(Vec::new(), Vec::new()); packet.questions.len()];
+                let mut ans_routing: Vec<(Vec<String>, Vec<String>)> = vec![(Vec::new(), Vec::new()); packet.answers.len()];
+                let mut auth_routing: Vec<(Vec<String>, Vec<String>)> = vec![(Vec::new(), Vec::new()); packet.authorities.len()];
+                let mut add_routing: Vec<(Vec<String>, Vec<String>)> = vec![(Vec::new(), Vec::new()); packet.additionals.len()];
 
                 for (dst_iface, dst_sock) in &sockets {
                     if dst_iface == &src_iface {
@@ -104,82 +120,160 @@ impl Reflector {
                         let should_fwd = self.config.should_forward(&src_iface, dst_iface, &question_names, Some(&answer_names));
                         if should_fwd {
                             let _ = dst_sock.send_to(&data, (MDNS_ADDR, MDNS_PORT)).await;
-                            for name in question_names.iter().chain(answer_names.iter()) {
-                                allowed_names.entry(name.clone()).or_default().push(dst_iface.clone());
+                            for entry in q_routing.iter_mut()
+                                .chain(ans_routing.iter_mut())
+                                .chain(auth_routing.iter_mut())
+                                .chain(add_routing.iter_mut())
+                            {
+                                entry.0.push(dst_iface.clone());
                             }
-                            mgr.collect_stats(
-                                &src_iface, &src_ip, "forwarded", &allowed_names, &disallowed_names,
-                                timestamp, is_resp, 0, 0, 0, 0
-                            );
                         } else {
-                            for name in question_names.iter().chain(answer_names.iter()) {
-                                disallowed_names.entry(name.clone()).or_default().push(dst_iface.clone());
+                            for entry in q_routing.iter_mut()
+                                .chain(ans_routing.iter_mut())
+                                .chain(auth_routing.iter_mut())
+                                .chain(add_routing.iter_mut())
+                            {
+                                entry.1.push(dst_iface.clone());
                             }
-                            mgr.collect_stats(
-                                &src_iface, &src_ip, "dropped", &allowed_names, &disallowed_names,
-                                timestamp, is_resp, 0, 0, 0, 0
-                            );
                         }
                     } else {
                         let mut rewritten_packet = DNSPacket::new();
                         rewritten_packet.transaction_id = packet.transaction_id;
                         rewritten_packet.flags = packet.flags;
 
-                        let mut kept_q = 0;
-                        let mut kept_a = 0;
-                        let mut dropped_q = 0;
-                        let mut dropped_a = 0;
+                        let mut kept_count = 0usize;
+                        let mut dropped_count = 0usize;
 
-                        for q in &packet.questions {
+                        for (idx, q) in packet.questions.iter().enumerate() {
                             if self.config.should_forward_question(&src_iface, dst_iface, &q.name) {
                                 rewritten_packet.questions.push(q.clone());
-                                allowed_names.entry(q.name.clone()).or_default().push(dst_iface.clone());
-                                kept_q += 1;
+                                q_routing[idx].0.push(dst_iface.clone());
+                                kept_count += 1;
                             } else {
-                                disallowed_names.entry(q.name.clone()).or_default().push(dst_iface.clone());
-                                dropped_q += 1;
+                                q_routing[idx].1.push(dst_iface.clone());
+                                dropped_count += 1;
                             }
                         }
 
-                        let mut filter_rrs = |rrs: &Vec<DNSResourceRecord>, out: &mut Vec<DNSResourceRecord>| {
-                            for rr in rrs {
+                        let mut filter_rrs = |rrs: &Vec<DNSResourceRecord>,
+                                              out: &mut Vec<DNSResourceRecord>,
+                                              routing: &mut Vec<(Vec<String>, Vec<String>)>| {
+                            for (idx, rr) in rrs.iter().enumerate() {
                                 if self.config.should_forward_record(&src_iface, dst_iface, &rr.name, rr.target_name.as_deref(), is_resp) {
                                     out.push(rr.clone());
-                                    allowed_names.entry(rr.name.clone()).or_default().push(dst_iface.clone());
-                                    if let Some(t) = &rr.target_name {
-                                        allowed_names.entry(t.clone()).or_default().push(dst_iface.clone());
-                                    }
-                                    kept_a += 1;
+                                    routing[idx].0.push(dst_iface.clone());
+                                    kept_count += 1;
                                 } else {
-                                    disallowed_names.entry(rr.name.clone()).or_default().push(dst_iface.clone());
-                                    if let Some(t) = &rr.target_name {
-                                        disallowed_names.entry(t.clone()).or_default().push(dst_iface.clone());
-                                    }
-                                    dropped_a += 1;
+                                    routing[idx].1.push(dst_iface.clone());
+                                    dropped_count += 1;
                                 }
                             }
                         };
 
-                        filter_rrs(&packet.answers, &mut rewritten_packet.answers);
-                        filter_rrs(&packet.authorities, &mut rewritten_packet.authorities);
-                        filter_rrs(&packet.additionals, &mut rewritten_packet.additionals);
+                        filter_rrs(&packet.answers, &mut rewritten_packet.answers, &mut ans_routing);
+                        filter_rrs(&packet.authorities, &mut rewritten_packet.authorities, &mut auth_routing);
+                        filter_rrs(&packet.additionals, &mut rewritten_packet.additionals, &mut add_routing);
 
-                        if kept_q > 0 || kept_a > 0 {
-                            if let Ok(rewritten_data) = rewritten_packet.serialize() {
+                        if kept_count > 0 {
+                            if dropped_count == 0 {
+                                // Unmodified packet: send raw bytes directly
+                                let _ = dst_sock.send_to(&data, (MDNS_ADDR, MDNS_PORT)).await;
+                            } else if let Ok(rewritten_data) = rewritten_packet.serialize() {
                                 let _ = dst_sock.send_to(&rewritten_data, (MDNS_ADDR, MDNS_PORT)).await;
-                                mgr.collect_stats(
-                                    &src_iface, &src_ip, "rewritten", &allowed_names, &disallowed_names,
-                                    timestamp, is_resp, kept_q, kept_a, dropped_q, dropped_a
-                                );
                             }
-                        } else if dropped_q > 0 || dropped_a > 0 {
-                            mgr.collect_stats(
-                                &src_iface, &src_ip, "dropped", &allowed_names, &disallowed_names,
-                                timestamp, is_resp, 0, 0, dropped_q, dropped_a
-                            );
                         }
                     }
                 }
+
+                // Build MessageItemRecord entries and aggregate message-level routing
+                let mut items = Vec::with_capacity(total_items);
+                let mut msg_fwd_set = HashSet::new();
+                let mut msg_drop_set = HashSet::new();
+
+                for (idx, q) in packet.questions.iter().enumerate() {
+                    let (ref mut fwd, ref mut drop) = q_routing[idx];
+                    fwd.sort();
+                    drop.sort();
+                    for f in fwd.iter() { msg_fwd_set.insert(f.clone()); }
+                    for d in drop.iter() { msg_drop_set.insert(d.clone()); }
+
+                    let disp = compute_item_disposition(fwd, drop);
+                    items.push(MessageItemRecord {
+                        id: None,
+                        message_id: None,
+                        section: PacketSection::Question as u8,
+                        name: q.name.clone(),
+                        rr_type: q.qtype,
+                        rr_class: q.qclass & 0x7FFF,
+                        ttl: None,
+                        rdata_summary: None,
+                        disposition: disp as u8,
+                        forwarded_interfaces: fwd.join(","),
+                        dropped_interfaces: drop.join(","),
+                    });
+                }
+
+                let mut append_rr_items = |rrs: &Vec<DNSResourceRecord>,
+                                           routing: &mut Vec<(Vec<String>, Vec<String>)>,
+                                           section: PacketSection| {
+                    for (idx, rr) in rrs.iter().enumerate() {
+                        let (ref mut fwd, ref mut drop) = routing[idx];
+                        fwd.sort();
+                        drop.sort();
+                        for f in fwd.iter() { msg_fwd_set.insert(f.clone()); }
+                        for d in drop.iter() { msg_drop_set.insert(d.clone()); }
+
+                        let disp = compute_item_disposition(fwd, drop);
+                        items.push(MessageItemRecord {
+                            id: None,
+                            message_id: None,
+                            section: section as u8,
+                            name: rr.name.clone(),
+                            rr_type: rr.rtype,
+                            rr_class: rr.rclass & 0x7FFF,
+                            ttl: Some(rr.ttl),
+                            rdata_summary: rr.rdata_summary.clone(),
+                            disposition: disp as u8,
+                            forwarded_interfaces: fwd.join(","),
+                            dropped_interfaces: drop.join(","),
+                        });
+                    }
+                };
+
+                append_rr_items(&packet.answers, &mut ans_routing, PacketSection::Answer);
+                append_rr_items(&packet.authorities, &mut auth_routing, PacketSection::Authority);
+                append_rr_items(&packet.additionals, &mut add_routing, PacketSection::Additional);
+
+                let all_forwarded = items.iter().all(|i| i.disposition == Disposition::Forwarded as u8);
+                let all_dropped = items.iter().all(|i| i.disposition == Disposition::Dropped as u8);
+
+                let msg_disposition = if all_forwarded {
+                    Disposition::Forwarded
+                } else if all_dropped {
+                    Disposition::Dropped
+                } else {
+                    Disposition::PartiallyForwarded
+                };
+
+                let mut msg_fwd_vec: Vec<String> = msg_fwd_set.into_iter().collect();
+                msg_fwd_vec.sort();
+                let mut msg_drop_vec: Vec<String> = msg_drop_set.into_iter().collect();
+                msg_drop_vec.sort();
+
+                let message_record = MessageRecord {
+                    id: None,
+                    timestamp,
+                    src_ip,
+                    src_interface: src_iface,
+                    packet_type: if is_resp { PacketType::Response as u8 } else { PacketType::Query as u8 },
+                    disposition: msg_disposition as u8,
+                    forwarded_interfaces: msg_fwd_vec.join(","),
+                    dropped_interfaces: msg_drop_vec.join(","),
+                    items,
+                };
+
+                let mut mgr = self.manager.lock().await;
+                mgr.record_message(message_record);
             }
         }
     }

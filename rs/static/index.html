@@ -43,6 +43,18 @@
         </div>
       </div>
 
+      <!-- View Navigation Tabs -->
+      <nav class="view-nav">
+        <button id="viewBtnLive" class="view-nav-btn active" onclick="switchMainView('live')">
+          <i data-lucide="gauge"></i>
+          <span>Live Dashboard</span>
+        </button>
+        <button id="viewBtnHistory" class="view-nav-btn" onclick="switchMainView('history')">
+          <i data-lucide="history"></i>
+          <span>Message History</span>
+        </button>
+      </nav>
+
       <div class="header-actions">
         <!-- Theme Selector -->
         <div class="theme-picker">
@@ -82,7 +94,7 @@
           <i data-lucide="help-circle"></i>
         </button>
 
-        <!-- Info / Help Icon -->
+        <!-- Info Icon -->
         <button onclick="toggleModal('infoModal', true)" class="btn btn-icon" title="About & Daemon Info">
           <i data-lucide="info"></i>
         </button>
@@ -94,142 +106,223 @@
       </div>
     </header>
 
-    <!-- Main Grid Layout -->
-    <main class="dashboard-grid">
-      <!-- Row 1: Metrics Cards -->
-      <section class="metrics-row">
-        <!-- Total Requests -->
-        <div class="metric-card" id="cardTotal">
-          <div class="metric-header">
-            <span class="metric-title">Total Requests</span>
-            <div class="metric-icon-box blue"><i data-lucide="activity"></i></div>
-          </div>
-          <div class="metric-value" id="valTotal">0</div>
-          <div class="sparkline-container">
-            <canvas id="sparklineTotal" height="30"></canvas>
-          </div>
-        </div>
-
-        <!-- Forwarded Packets -->
-        <div class="metric-card" id="cardForwarded">
-          <div class="metric-header">
-            <span class="metric-title">Forwarded</span>
-            <div class="metric-icon-box green"><i data-lucide="arrow-up-right"></i></div>
-          </div>
-          <div class="metric-value" id="valForwarded">0</div>
-          <div class="sparkline-container">
-            <canvas id="sparklineForwarded" height="30"></canvas>
-          </div>
-        </div>
-
-        <!-- Dropped Packets -->
-        <div class="metric-card" id="cardDropped">
-          <div class="metric-header">
-            <span class="metric-title">Dropped</span>
-            <div class="metric-icon-box red"><i data-lucide="ban"></i></div>
-          </div>
-          <div class="metric-value" id="valDropped">0</div>
-          <div class="sparkline-container">
-            <canvas id="sparklineDropped" height="30"></canvas>
-          </div>
-        </div>
-
-        <!-- Rewritten Packets -->
-        <div class="metric-card" id="cardRewritten">
-          <div class="metric-header">
-            <span class="metric-title">Rewritten</span>
-            <div class="metric-icon-box purple"><i data-lucide="shuffle"></i></div>
-          </div>
-          <div class="metric-value" id="valRewritten">0</div>
-          <div class="sparkline-container">
-            <canvas id="sparklineRewritten" height="30"></canvas>
-          </div>
-        </div>
-      </section>
-
-      <!-- Row 2: Traffic Chart -->
-      <section class="chart-section dashboard-card">
-        <div class="card-header">
-          <h2>Network Traffic Trends (Real-Time)</h2>
-          <span class="card-subtitle">Rates updated based on polling window</span>
-        </div>
-        <div class="chart-container">
-          <canvas id="metricsChart"></canvas>
-        </div>
-      </section>
-
-      <!-- Row 3: Splits into Active Hosts (Left) and Queried Domains (Right) -->
-      <div class="split-row">
-        <!-- Active Hosts Panel -->
-        <section class="hosts-section dashboard-card">
-          <div class="card-header">
-            <h2>Active Hosts</h2>
-            <span class="card-subtitle">Source devices seen transmitting mDNS traffic across reflector interfaces.</span>
-            <div class="card-search-row">
-              <div class="search-input-wrapper">
-                <i data-lucide="search" class="search-icon"></i>
-                <input type="text" id="hostSearch" placeholder="Filter hosts by IP or interface..." oninput="filterHosts()">
-              </div>
+    <!-- Live Dashboard View Container -->
+    <div id="liveDashboardView">
+      <main class="dashboard-grid">
+        <!-- Row 1: Metrics Cards -->
+        <section class="metrics-row">
+          <!-- Total Messages -->
+          <div class="metric-card" id="cardTotal">
+            <div class="metric-header">
+              <span class="metric-title">Total Messages</span>
+              <div class="metric-icon-box blue"><i data-lucide="activity"></i></div>
             </div>
-          </div>
-          <div class="table-container">
-            <table class="hosts-table">
-              <thead>
-                <tr>
-                  <th onclick="setHostsSort('ip')" class="sortable-th">IP Address <span id="sortIcon-ip"></span></th>
-                  <th onclick="setHostsSort('interface')" class="sortable-th">Interface <span id="sortIcon-interface"></span></th>
-                  <th onclick="setHostsSort('packets')" class="sortable-th">Packets <span id="sortIcon-packets"></span></th>
-                  <th onclick="setHostsSort('status')" class="sortable-th">Status <span id="sortIcon-status"></span></th>
-                  <th onclick="setHostsSort('last_seen')" class="sortable-th">Last Active <span id="sortIcon-last_seen"></span></th>
-                </tr>
-              </thead>
-              <tbody id="hostsTableBody">
-                <tr>
-                  <td colspan="5" class="table-empty">No active hosts discovered.</td>
-                </tr>
-              </tbody>
-            </table>
-          </div>
-        </section>
-
-        <!-- Queried Domains Panel -->
-        <section class="domains-section dashboard-card">
-          <div class="card-header">
-            <h2>Domain Names Explorer</h2>
-            <span class="card-subtitle">Discovery queries and responses matching rule criteria.</span>
-            <div class="card-search-row">
-              <div class="search-input-wrapper">
-                <i data-lucide="search" class="search-icon"></i>
-                <input type="text" id="domainSearch" placeholder="Filter domain names..." oninput="filterDomains()">
-              </div>
-              <select id="domainInterfaceFilter" onchange="filterDomains()" class="filter-select">
-                <option value="">All Interfaces</option>
-              </select>
-              <select id="domainStatusFilter" onchange="filterDomains()" class="filter-select">
-                <option value="">All Actions</option>
-                <option value="fwd">Forwarded</option>
-                <option value="drop">Dropped</option>
-              </select>
+            <div class="metric-value" id="valTotal">0</div>
+            <div class="sparkline-container">
+              <canvas id="sparklineTotal" height="30"></canvas>
             </div>
           </div>
 
-          <div class="tabs">
-            <button id="tabQueries" class="tab-btn active" onclick="switchDomainTab('queries')">
-              Queries <span class="badge" id="badgeQueries">0</span>
-            </button>
-            <button id="tabResponses" class="tab-btn" onclick="switchDomainTab('responses')">
-              Responses <span class="badge" id="badgeResponses">0</span>
-            </button>
+          <!-- Forwarded Messages -->
+          <div class="metric-card" id="cardForwarded">
+            <div class="metric-header">
+              <span class="metric-title">Forwarded</span>
+              <div class="metric-icon-box green"><i data-lucide="arrow-up-right"></i></div>
+            </div>
+            <div class="metric-value" id="valForwarded">0</div>
+            <div class="sparkline-container">
+              <canvas id="sparklineForwarded" height="30"></canvas>
+            </div>
           </div>
 
-          <div class="domain-list-container">
-            <div id="domainList" class="domain-list">
-              <div class="list-empty">No domain statistics collected yet.</div>
+          <!-- Partially Forwarded Messages -->
+          <div class="metric-card" id="cardPartiallyForwarded">
+            <div class="metric-header">
+              <span class="metric-title">Partially Forwarded</span>
+              <div class="metric-icon-box yellow"><i data-lucide="git-branch"></i></div>
+            </div>
+            <div class="metric-value" id="valPartiallyForwarded">0</div>
+            <div class="sparkline-container">
+              <canvas id="sparklinePartiallyForwarded" height="30"></canvas>
+            </div>
+          </div>
+
+          <!-- Dropped Messages -->
+          <div class="metric-card" id="cardDropped">
+            <div class="metric-header">
+              <span class="metric-title">Dropped</span>
+              <div class="metric-icon-box red"><i data-lucide="ban"></i></div>
+            </div>
+            <div class="metric-value" id="valDropped">0</div>
+            <div class="sparkline-container">
+              <canvas id="sparklineDropped" height="30"></canvas>
             </div>
           </div>
         </section>
-      </div>
-    </main>
+
+        <!-- Row 2: Traffic Chart -->
+        <section class="chart-section dashboard-card">
+          <div class="card-header">
+            <h2>Network Traffic Trends (Real-Time)</h2>
+            <span class="card-subtitle">Message rates per polling interval across all interfaces</span>
+          </div>
+          <div class="chart-container">
+            <canvas id="metricsChart"></canvas>
+          </div>
+        </section>
+      </main>
+    </div> <!-- /#liveDashboardView -->
+
+    <!-- Message History View Container -->
+    <div id="messageHistoryView" class="hidden">
+      <section class="dashboard-card history-card">
+        <div class="card-header history-header-wrapper">
+          <div class="history-title-group">
+            <h2>mDNS Message History</h2>
+            <span class="card-subtitle">Chronological record of received mDNS packets and per-record dispositions</span>
+          </div>
+          <div class="history-header-actions">
+            <div class="disp-legend">
+              <span class="disp-legend-item"><span class="disp-dot forwarded"></span> Forwarded</span>
+              <span class="disp-legend-item"><span class="disp-dot partially-forwarded"></span> Partially Forwarded</span>
+              <span class="disp-legend-item"><span class="disp-dot dropped"></span> Dropped</span>
+            </div>
+            <button onclick="loadHistoryData(1)" class="btn btn-secondary" title="Refresh Message History">
+              <i data-lucide="refresh-cw"></i>
+              <span>Refresh</span>
+            </button>
+            <button onclick="resetHistoryFilters()" class="btn btn-secondary" title="Reset Filters to Default">
+              <i data-lucide="rotate-ccw"></i>
+              <span>Reset</span>
+            </button>
+          </div>
+        </div>
+
+        <!-- Filter Bar -->
+        <div class="history-filter-bar">
+          <!-- Search Inputs Row -->
+          <div class="history-search-grid">
+            <div class="search-input-wrapper">
+              <i data-lucide="help-circle" class="search-icon"></i>
+              <input type="text" id="historyQuerySearch" placeholder="Filter by query name (e.g. _googlecast._tcp.local)..." onkeydown="if(event.key==='Enter') loadHistoryData(1)">
+            </div>
+            <div class="search-input-wrapper">
+              <i data-lucide="database" class="search-icon"></i>
+              <input type="text" id="historyResponseSearch" placeholder="Filter by response name or data (IP, target, TXT)..." onkeydown="if(event.key==='Enter') loadHistoryData(1)">
+            </div>
+            <div class="search-input-wrapper">
+              <i data-lucide="monitor" class="search-icon"></i>
+              <input type="text" id="historySrcIpFilter" placeholder="Filter by source IP (e.g. 192.168.1.50)..." onkeydown="if(event.key==='Enter') loadHistoryData(1)">
+            </div>
+            <button onclick="loadHistoryData(1)" class="btn btn-primary">
+              <i data-lucide="search"></i>
+              <span>Search</span>
+            </button>
+          </div>
+
+          <!-- Dropdown Selectors Row -->
+          <div class="filter-controls-group">
+            <select id="historyInterfaceFilter" onchange="loadHistoryData(1)" class="filter-select">
+              <option value="">All Ingress Interfaces</option>
+            </select>
+
+            <select id="historyDstInterfaceFilter" onchange="loadHistoryData(1)" class="filter-select">
+              <option value="">All Destination Interfaces</option>
+            </select>
+
+            <select id="historyDispositionFilter" onchange="loadHistoryData(1)" class="filter-select">
+              <option value="">All Dispositions</option>
+              <option value="1">Forwarded</option>
+              <option value="2">Partially Forwarded</option>
+              <option value="0">Dropped</option>
+            </select>
+
+            <select id="historyTypeFilter" onchange="loadHistoryData(1)" class="filter-select">
+              <option value="">All Packet Types</option>
+              <option value="0">Queries</option>
+              <option value="1">Responses</option>
+            </select>
+
+            <select id="historyTimePreset" onchange="onHistoryPresetChange()" class="filter-select">
+              <option value="15m">Last 15 Minutes</option>
+              <option value="1h">Last 1 Hour</option>
+              <option value="24h">Last 24 Hours</option>
+              <option value="7d" selected>Last 7 Days</option>
+              <option value="all">All Time</option>
+              <option value="custom">Custom Range...</option>
+            </select>
+          </div>
+
+          <!-- Custom Time Range Row -->
+          <div id="historyCustomTimeRow" class="custom-time-row hidden">
+            <div class="custom-time-field">
+              <label for="historyTimeFrom">From:</label>
+              <input type="datetime-local" id="historyTimeFrom" class="datetime-input">
+            </div>
+            <div class="custom-time-field">
+              <label for="historyTimeTo">To:</label>
+              <input type="datetime-local" id="historyTimeTo" class="datetime-input">
+            </div>
+            <button onclick="loadHistoryData(1)" class="btn btn-primary btn-sm">Apply Range</button>
+          </div>
+        </div>
+
+        <!-- Table Container -->
+        <div class="table-container history-table-container">
+          <table class="history-table">
+            <thead>
+              <tr>
+                <th style="width: 36px;"></th>
+                <th style="width: 56px; text-align: center;">Status</th>
+                <th style="width: 165px;">Timestamp</th>
+                <th style="width: 130px;">Source IP</th>
+                <th style="width: 95px;">Ingress</th>
+                <th style="width: 95px;">Type</th>
+                <th style="width: 145px;">Forwarded To</th>
+                <th>Queries &amp; Resource Records</th>
+              </tr>
+            </thead>
+            <tbody id="historyTableBody">
+              <tr>
+                <td colspan="8" class="table-empty">Loading message history...</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <!-- Pagination Bar -->
+        <div class="history-pagination">
+          <div class="pagination-info" id="historyPaginationInfo">
+            Showing 0 - 0 of 0 messages
+          </div>
+          <div class="pagination-controls">
+            <div class="page-size-selector">
+              <label for="historyPageSize">Per page:</label>
+              <select id="historyPageSize" onchange="loadHistoryData(1)" class="filter-select select-sm">
+                <option value="25">25</option>
+                <option value="50" selected>50</option>
+                <option value="100">100</option>
+              </select>
+            </div>
+            <div class="pagination-buttons">
+              <button id="btnHistFirst" onclick="historyGoToPage(1)" class="btn btn-icon btn-sm" title="First Page">
+                <i data-lucide="chevrons-left"></i>
+              </button>
+              <button id="btnHistPrev" onclick="historyGoToPage(currentHistoryPage - 1)" class="btn btn-icon btn-sm" title="Previous Page">
+                <i data-lucide="chevron-left"></i>
+              </button>
+              <span id="historyPageIndicator" class="page-indicator">Page 1 of 1</span>
+              <button id="btnHistNext" onclick="historyGoToPage(currentHistoryPage + 1)" class="btn btn-icon btn-sm" title="Next Page">
+                <i data-lucide="chevron-right"></i>
+              </button>
+              <button id="btnHistLast" onclick="historyGoToPage(totalHistoryPages)" class="btn btn-icon btn-sm" title="Last Page">
+                <i data-lucide="chevrons-right"></i>
+              </button>
+            </div>
+          </div>
+        </div>
+      </section>
+    </div>
   </div>
 
   <!-- Info Modal -->
@@ -275,21 +368,23 @@
   <div id="helpModal" class="modal-overlay hidden">
     <div class="modal-card">
       <div class="modal-header">
-        <h2>Dashboard Help & Guide</h2>
+        <h2>Dashboard Help &amp; Guide</h2>
         <button onclick="toggleModal('helpModal', false)" class="btn btn-icon"><i data-lucide="x"></i></button>
       </div>
       <div class="modal-body">
         <h3>Network Traffic Graph</h3>
-        <p>The network traffic graph displays real-time packet activity. It updates dynamically according to the auto-refresh settings and shows the counts of forwarded, dropped, and rewritten mDNS packets over time to help you identify trends or anomalies.</p>
+        <p>The network traffic graph displays real-time message activity across all configured interfaces, tracking Total, Forwarded, Partially Forwarded, and Dropped mDNS messages over time.</p>
 
-        <h3>Domain Names Explorer</h3>
-        <p>The "Domain Names Explorer" panel displays mDNS service types/domain queries and responses aggregated by service name. You can expand a domain to inspect the source IPs querying or responding to that service, apply real-time filters by search query, packet interface, or packet action, and observe active interfaces.</p>
-
-        <h3>Active Hosts Panel Purpose</h3>
-        <p>The "Active Hosts" panel maps out which source IP addresses are transmitting traffic on local network interfaces. It allows network administrators to see active devices, verify interface routing layout, and spot idle states.</p>
+        <h3>Message History &amp; Dispositions</h3>
+        <p>The "Message History" view records every received mDNS message along with the disposition of every individual question and resource record inside it:</p>
+        <ul style="margin: 8px 0 12px 20px; font-size: 13px; color: var(--text-secondary); line-height: 1.6;">
+          <li><strong>Green Dot (Forwarded):</strong> Forwarded to all candidate destination interfaces.</li>
+          <li><strong>Yellow Dot (Partially Forwarded):</strong> Forwarded to a subset of destination interfaces, or packet had some records stripped while others were forwarded.</li>
+          <li><strong>Red Dot (Dropped):</strong> Blocked on all destination interfaces.</li>
+        </ul>
 
         <h3>Top-Right Icon Controls</h3>
-        <p>The settings gear icon allows adjusting chart buffers and poll schedules locally. The info button exposes current connection profiles and debug diagnostics.</p>
+        <p>The settings gear icon allows adjusting chart buffers and poll schedules locally. The info button exposes current connection profiles and version diagnostics.</p>
       </div>
       <div class="modal-footer">
         <button onclick="toggleModal('helpModal', false)" class="btn btn-primary">Close</button>
@@ -308,7 +403,7 @@
         <div class="form-group">
           <label for="setRefreshInterval">Poll Rate (seconds)</label>
           <input type="number" id="setRefreshInterval" min="1" max="60" value="8">
-          <p class="help-text">How often the dashboard requests metrics from the HTTP proxy.</p>
+          <p class="help-text">How often the dashboard requests metrics from the HTTP server.</p>
         </div>
         <div class="form-group">
           <label for="setChartWindow">Chart Display Window (data points)</label>
@@ -323,40 +418,6 @@
     </div>
   </div>
 
-  <!-- Host Details Modal -->
-  <div id="hostDetailsModal" class="modal-overlay hidden">
-    <div class="modal-card modal-large" style="max-width: 800px; width: 90vw;">
-      <div class="modal-header">
-        <h2 id="hostDetailsTitle">Host Details</h2>
-        <button onclick="toggleModal('hostDetailsModal', false)" class="btn btn-icon"><i data-lucide="x"></i></button>
-      </div>
-      <div class="modal-body">
-        <div id="hostDetailsContent" class="host-details-content hidden">
-          <div class="tabs" style="border-bottom: none; margin-bottom: 10px;">
-            <button id="modalTabQueriesBtn" class="tab-btn active" onclick="switchModalTab('queries')">Queries</button>
-            <button id="modalTabResponsesBtn" class="tab-btn" onclick="switchModalTab('responses')">Responses</button>
-          </div>
-          <div class="table-container" style="padding: 0;">
-            <table class="hosts-table">
-              <thead>
-                <tr>
-                  <th>Domain / Service</th>
-                  <th>Packets</th>
-                  <th>Routing Paths</th>
-                </tr>
-              </thead>
-              <tbody id="hostDetailsTableBody">
-                <!-- Dynamically populated -->
-              </tbody>
-            </table>
-          </div>
-        </div>
-        <div id="hostDetailsEmpty" class="list-empty hidden">No tracking data available for this host. Ensure tracking is enabled in configuration.</div>
-        <div id="hostDetailsLoading" class="list-empty hidden">Loading...</div>
-      </div>
-    </div>
-  </div>
-
   <!-- Clear Stats Modal -->
   <div id="clearStatsModal" class="modal-overlay hidden">
     <div class="modal-card">
@@ -365,10 +426,10 @@
         <button onclick="toggleModal('clearStatsModal', false)" class="btn btn-icon"><i data-lucide="x"></i></button>
       </div>
       <div class="modal-body">
-        <p style="margin-bottom: 16px; font-size: 14px; line-height: 1.5;">Are you sure you want to clear the top-level packet statistics? This will reset all packet counts on the dashboard.</p>
+        <p style="margin-bottom: 16px; font-size: 14px; line-height: 1.5;">Are you sure you want to clear the top-level message statistics? This will reset all message counts on the dashboard.</p>
         <div style="display: flex; align-items: center; gap: 10px; padding: 12px; background-color: var(--btn-secondary-bg); border: 1px solid var(--border-color); border-radius: 8px;">
           <input type="checkbox" id="chkClearTracking" style="width: 18px; height: 18px; cursor: pointer; accent-color: var(--color-primary);">
-          <label for="chkClearTracking" style="cursor: pointer; font-size: 13px; font-weight: 500; color: var(--text-primary); user-select: none;">Also clear tracking history (hosts and service names)</label>
+          <label for="chkClearTracking" style="cursor: pointer; font-size: 13px; font-weight: 500; color: var(--text-primary); user-select: none;">Also clear message history database</label>
         </div>
       </div>
       <div class="modal-footer">

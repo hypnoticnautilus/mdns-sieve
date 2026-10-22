@@ -1,6 +1,24 @@
 use std::collections::{HashMap, HashSet};
 use std::fmt;
 
+#[allow(dead_code)]
+pub fn dns_type_to_string(t: u16) -> &'static str {
+    match t {
+        1 => "A",
+        2 => "NS",
+        5 => "CNAME",
+        6 => "SOA",
+        12 => "PTR",
+        15 => "MX",
+        16 => "TXT",
+        28 => "AAAA",
+        33 => "SRV",
+        47 => "NSEC",
+        255 => "ANY",
+        _ => "OTHER",
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct MdnsParsingError(pub String);
 
@@ -27,6 +45,7 @@ pub struct DNSResourceRecord {
     pub ttl: u32,
     pub rdata: Vec<u8>,
     pub target_name: Option<String>,
+    pub rdata_summary: Option<String>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -48,6 +67,7 @@ impl DNSPacket {
         (self.flags & 0x8000) != 0
     }
 
+    #[allow(dead_code)]
     pub fn extract_names(&self) -> HashSet<String> {
         let mut names = HashSet::new();
         for q in &self.questions {
@@ -85,7 +105,7 @@ impl DNSPacket {
             buffer.extend_from_slice(&q.qclass.to_be_bytes());
         }
 
-        let mut serialize_rr_list = |rrs: &Vec<DNSResourceRecord>, buffer: &mut Vec<u8>, comp_dict: &mut HashMap<String, u16>| -> Result<(), MdnsParsingError> {
+        let serialize_rr_list = |rrs: &Vec<DNSResourceRecord>, buffer: &mut Vec<u8>, comp_dict: &mut HashMap<String, u16>| -> Result<(), MdnsParsingError> {
             for rr in rrs {
                 write_name(&rr.name, comp_dict, buffer)?;
                 buffer.extend_from_slice(&rr.rtype.to_be_bytes());
