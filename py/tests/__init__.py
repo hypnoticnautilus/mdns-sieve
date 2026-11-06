@@ -1,3 +1,0 @@
-"""
-mdns-sieve test suite.
-"""

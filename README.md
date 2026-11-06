@@ -32,7 +32,7 @@ IoT devices often broadcast state advertisements. Since multicast Wi-Fi frames a
 
 ## Quick Start
 
-The backend daemon has been completely rewritten in Rust (`rs/`) for superior performance and memory safety, embedding the web dashboard directly into the binary.
+The daemon is written in Rust (`rs/`) and embeds the web dashboard directly into the binary.
 
 ### 1. Build the Binary
 If you have a local Rust toolchain installed, you can compile it natively:
@@ -70,6 +70,7 @@ tracking:
   db_path: "/var/lib/mdns-sieve/responses.db"
   flush_interval_seconds: 5
   retention_days: 7
+  max_records: 50000
 
 # Embedded Web GUI / JSON API
 web_server:
@@ -99,38 +100,24 @@ Open `http://your_server:8080` in your browser to access the dashboard.
 
 ## Web Dashboard
 
-`mdns-sieve` provides a responsive web interface to inspect network activity.
-
-### Dark and Light Mode Dashboard Overviews
-
-| Dark Theme Overview | Light Theme Overview |
-| :---: | :---: |
-| ![Dark Theme Overview](py-gui/screenshots/overview-dark_theme.png) | ![Light Theme Overview](py-gui/screenshots/overview-light_theme.png) |
+`mdns-sieve` provides a responsive web interface (with dark and light mode themes) to inspect network activity in real time.
 
 ### Features
 
-#### Network Traffic Graph
-Displays trend lines showing forwarded, dropped, and rewritten packets.
-![Network Traffic Graph](py-gui/screenshots/network_graph.png)
+#### Live Dashboard & Network Traffic Graph
+Displays real-time KPI counters and trend lines showing total, forwarded, partially forwarded, and dropped mDNS messages.
+
+#### Message History Explorer
+Provides a detailed, paginated log of received mDNS queries and responses:
+* **Granular Dispositions**: Color-coded indicator dots (Forwarded, Partially Forwarded, Dropped) at both the packet level and individual question/resource-record level, with tooltips showing ingress and routed destination interfaces.
+* **Expandable Packet Inspection**: Expand any message to inspect its individual questions and resource records (`Answer`, `Authority`, `Additional`), including decoded record data (`A`, `AAAA`, `PTR`, `SRV`, `TXT`, `CNAME`, `NS`, `NSEC`), TTLs, and copy-to-clipboard actions.
+* **Multi-Facet Filtering**: Filter messages by query name, record name or data, source IP, ingress interface, destination interface, disposition, packet type, and time range.
 
 #### Telemetry & SQLite Persistence
-
 When tracking is enabled, the daemon persists traffic metrics to an SQLite database (default: `/var/lib/mdns-sieve/responses.db`).
-* **In-Memory Buffering**: The system records metrics in-memory first to minimize disk writes, periodically flushing batch queries and responses.
-* **Automated Pruning**: Telemetry history is pruned based on a configurable `retention_days` limit to prevent database growth.
+* **In-Memory Buffering**: The system records metrics in-memory first to minimize disk writes, periodically flushing batch messages and records.
+* **Automated Pruning**: Telemetry history is pruned based on configurable `retention_days` and `max_records` limits to bound database growth.
 * **Shutdown Handling**: Catches termination signals (`SIGINT` and `SIGTERM`) to flush all pending memory buffers to disk before exiting.
-
-#### Domain Names Explorer
-Groups mDNS records by service type and source IP. Supports regex/text queries, action selectors (Forwarded/Dropped), and interface filters. Service names are middle-ellipsized, with hover tooltips and a copy button supporting HTTP secure context fallback.
-![Domain Names Explorer](py-gui/screenshots/domain_name_explorer.png)
-
-#### Active Hosts
-Lists active source IPs on network interfaces with sparklines showing packet activity.
-![Active Hosts](py-gui/screenshots/active_hosts.png)
-
-#### Host Details & Flex Modals
-Consolidation of nested scrollbars inside modal bodies for viewport adjustments and host statistics.
-![Host Details](py-gui/screenshots/host_details.png)
 
 #### Stats Reset & Database Purging
 GUI controls allowing users to reset dashboard counters and purge SQLite tracking history.
@@ -145,7 +132,6 @@ This repository is organized as follows:
   * `src/config.rs` — YAML configuration rule validation and matching engine.
   * `src/reflector.rs` — Linux `SO_BINDTODEVICE` isolated sockets and recovery event loop.
   * `src/database.rs` — SQLite DatabaseManager for metrics persistence and automated pruning.
-  * `src/server.rs` — `axum` HTTP server providing stats, hosts activity, domain metrics, and the Web GUI.
+  * `src/server.rs` — `axum` HTTP server providing stats, message history queries, and the embedded Web GUI.
   * `src/main.rs` — CLI entrypoint, configuration loading, and signal handling.
 * `pkg/apk/` — Alpine Linux packaging scripts and Docker build environments.
-* `py/` & `py-gui/` — Legacy Python versions of the daemon and GUI (deprecated).
