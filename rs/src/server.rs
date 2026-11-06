@@ -13,6 +13,26 @@ use crate::database::{DatabaseManager, Disposition, MessageRecord, HistoryFilter
 use crate::config::{WebServerConfig, TrackingConfig};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+pub struct FlushTask {
+    db: DatabaseManager,
+    messages: Vec<MessageRecord>,
+    stats: (u64, u64, u64, u64),
+    prune_params: Option<(u32, usize)>,
+}
+
+impl FlushTask {
+    pub fn execute(self) {
+        if !self.messages.is_empty() {
+            self.db.batch_insert_messages(&self.messages);
+        }
+        let (total, forwarded, partially_forwarded, dropped) = self.stats;
+        self.db.save_global_stats(total, forwarded, partially_forwarded, dropped);
+        if let Some((retention_days, max_records)) = self.prune_params {
+            self.db.prune_old_records(retention_days, max_records);
+        }
+    }
+}
+
 pub struct CommandServerManager {
     config_server: Option<WebServerConfig>,
     tracking_config: Option<TrackingConfig>,
@@ -66,7 +86,7 @@ impl CommandServerManager {
         }
     }
 
-    pub fn record_message(&mut self, record: MessageRecord) {
+    pub fn record_message_deferred(&mut self, record: MessageRecord) -> Option<FlushTask> {
         let web_enabled = self.config_server.as_ref().map(|c| c.enabled).unwrap_or(false);
         let tracking_enabled = self.tracking_config.as_ref().map(|c| c.enabled).unwrap_or(false);
 
@@ -84,44 +104,48 @@ impl CommandServerManager {
         if tracking_enabled && self.db_manager.is_some() {
             self.db_buffer_messages.push(record);
             let force_flush = self.db_buffer_messages.len() >= 200;
-            self.flush_stats(force_flush);
+            return self.prepare_flush_task(force_flush, true);
         }
+        None
     }
 
-    pub fn flush_messages_buffer(&mut self) {
-        if let Some(db) = &self.db_manager {
-            if !self.db_buffer_messages.is_empty() {
-                db.batch_insert_messages(&self.db_buffer_messages);
-                self.db_buffer_messages.clear();
-            }
-            db.save_global_stats(
-                self.stats_total,
-                self.stats_forwarded,
-                self.stats_partially_forwarded,
-                self.stats_dropped,
-            );
-        }
-    }
-
-    pub fn flush_stats(&mut self, force: bool) {
+    pub fn prepare_flush_task(&mut self, force: bool, include_prune: bool) -> Option<FlushTask> {
         let (retention_days, max_records, flush_interval) = match &self.tracking_config {
             Some(c) if c.enabled => (c.effective_retention_days(), c.effective_max_records(), c.flush_interval_seconds),
-            _ => return,
+            _ => return None,
         };
-        if self.db_manager.is_none() {
-            return;
-        }
+        let db = self.db_manager.as_ref()?.clone();
 
         let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs_f64();
         if !force && (now - self.last_flush_time) < (flush_interval as f64) {
-            return;
+            return None;
         }
         self.last_flush_time = now;
 
-        self.flush_messages_buffer();
+        let messages = std::mem::take(&mut self.db_buffer_messages);
+        let stats = (
+            self.stats_total,
+            self.stats_forwarded,
+            self.stats_partially_forwarded,
+            self.stats_dropped,
+        );
+        let prune_params = if include_prune {
+            Some((retention_days, max_records))
+        } else {
+            None
+        };
 
-        if let Some(db) = &self.db_manager {
-            db.prune_old_records(retention_days, max_records);
+        Some(FlushTask {
+            db,
+            messages,
+            stats,
+            prune_params,
+        })
+    }
+
+    pub fn flush_stats(&mut self, force: bool) {
+        if let Some(task) = self.prepare_flush_task(force, true) {
+            task.execute();
         }
     }
 
@@ -151,10 +175,13 @@ impl CommandServerManager {
                 self.stats_forwarded = 0;
                 self.stats_partially_forwarded = 0;
                 self.stats_dropped = 0;
+                let clear_tracking = payload.get("clear_tracking").and_then(|v| v.as_bool()).unwrap_or(false);
+                if clear_tracking {
+                    self.db_buffer_messages.clear();
+                }
                 if let Some(db) = &self.db_manager {
                     db.save_global_stats(0, 0, 0, 0);
-                    if payload.get("clear_tracking").and_then(|v| v.as_bool()).unwrap_or(false) {
-                        self.db_buffer_messages.clear();
+                    if clear_tracking {
                         db.clear_tracking_data();
                     }
                 }
@@ -223,8 +250,29 @@ async fn api_clear(
     State(manager): State<Arc<Mutex<CommandServerManager>>>,
     axum::extract::Json(body): axum::extract::Json<ClearCommandBody>,
 ) -> Json<Value> {
-    let mut mgr = manager.lock().await;
-    Json(mgr.process_command(&json!({"command": "clear", "clear_tracking": body.clear_tracking})))
+    let clear_tracking = body.clear_tracking;
+    let db_opt = {
+        let mut mgr = manager.lock().await;
+        mgr.stats_total = 0;
+        mgr.stats_forwarded = 0;
+        mgr.stats_partially_forwarded = 0;
+        mgr.stats_dropped = 0;
+        if clear_tracking {
+            mgr.db_buffer_messages.clear();
+        }
+        mgr.db_manager.clone()
+    };
+
+    if let Some(db) = db_opt {
+        let _ = tokio::task::spawn_blocking(move || {
+            db.save_global_stats(0, 0, 0, 0);
+            if clear_tracking {
+                db.clear_tracking_data();
+            }
+        }).await;
+    }
+
+    Json(json!({"status": "ok"}))
 }
 
 #[derive(serde::Deserialize)]
@@ -246,12 +294,13 @@ async fn api_history(
     State(manager): State<Arc<Mutex<CommandServerManager>>>,
     Query(query): Query<HistoryQueryRequest>,
 ) -> Json<Value> {
-    let mut mgr = manager.lock().await;
-    mgr.flush_messages_buffer();
+    let (db_opt, flush_task, interfaces) = {
+        let mut mgr = manager.lock().await;
+        let flush_task = mgr.prepare_flush_task(true, false);
+        (mgr.db_manager.clone(), flush_task, mgr.configured_interfaces.clone())
+    };
 
-    let interfaces = mgr.configured_interfaces.clone();
-
-    if let Some(db) = &mgr.db_manager {
+    if let Some(db) = db_opt {
         let filters = HistoryFilterParams {
             page: query.page,
             limit: query.limit,
@@ -267,7 +316,15 @@ async fn api_history(
         };
         let page = filters.page.unwrap_or(1).max(1);
         let limit = filters.limit.unwrap_or(50).clamp(1, 200);
-        let (records, total) = db.query_messages(&filters);
+
+        let query_res = tokio::task::spawn_blocking(move || {
+            if let Some(task) = flush_task {
+                task.execute();
+            }
+            db.query_messages(&filters)
+        }).await;
+
+        let (records, total) = query_res.unwrap_or_else(|_| (Vec::new(), 0));
         let total_pages = if total == 0 { 1 } else { (total + limit - 1) / limit };
 
         Json(json!({

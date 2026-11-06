@@ -209,7 +209,21 @@ function toggleModal(modalId, show) {
   }
 }
 
-async function copyToClipboard(text, btn, event) {
+async function copyToClipboard(btnOrText, btnOrEvent, maybeEvent) {
+  let text = '';
+  let btn = null;
+  let event = null;
+
+  if (typeof btnOrText === 'string') {
+    text = btnOrText;
+    btn = btnOrEvent;
+    event = maybeEvent;
+  } else if (btnOrText && btnOrText.dataset) {
+    text = btnOrText.dataset.copy || '';
+    btn = btnOrText;
+    event = btnOrEvent;
+  }
+
   if (event) {
     event.stopPropagation();
   }
@@ -902,7 +916,7 @@ function renderHistoryTableRows() {
               <td>
                 <div class="service-name-wrapper">
                   <span title="${escapeHtml(q.name)}">${escapeHtml(shortenServiceName(q.name))}</span>
-                  <button class="copy-name-btn" title="Copy name" onclick="copyToClipboard('${escapeHtml(q.name)}', this, event)">
+                  <button class="copy-name-btn" title="Copy name" data-copy="${escapeHtml(q.name)}" onclick="copyToClipboard(this, event)">
                     <i data-lucide="copy"></i>
                   </button>
                 </div>
@@ -926,7 +940,7 @@ function renderHistoryTableRows() {
           const rdataHtml = r.rdata_summary
             ? `<div class="service-name-wrapper">
                  <span title="${escapeHtml(r.rdata_summary)}">${escapeHtml(shortenServiceName(r.rdata_summary))}</span>
-                 <button class="copy-name-btn" title="Copy record data" onclick="copyToClipboard('${escapeHtml(r.rdata_summary)}', this, event)">
+                 <button class="copy-name-btn" title="Copy record data" data-copy="${escapeHtml(r.rdata_summary)}" onclick="copyToClipboard(this, event)">
                    <i data-lucide="copy"></i>
                  </button>
                </div>`
@@ -939,7 +953,7 @@ function renderHistoryTableRows() {
               <td>
                 <div class="service-name-wrapper">
                   <span title="${escapeHtml(r.name)}">${escapeHtml(shortenServiceName(r.name))}</span>
-                  <button class="copy-name-btn" title="Copy name" onclick="copyToClipboard('${escapeHtml(r.name)}', this, event)">
+                  <button class="copy-name-btn" title="Copy name" data-copy="${escapeHtml(r.name)}" onclick="copyToClipboard(this, event)">
                     <i data-lucide="copy"></i>
                   </button>
                 </div>

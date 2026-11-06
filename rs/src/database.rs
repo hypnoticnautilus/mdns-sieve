@@ -30,8 +30,20 @@ pub enum PacketSection {
     Additional = 3,
 }
 
+#[derive(Clone)]
 pub struct DatabaseManager {
     db_path: String,
+}
+
+fn escape_like(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        if c == '\\' || c == '%' || c == '_' {
+            out.push('\\');
+        }
+        out.push(c);
+    }
+    out
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -94,6 +106,7 @@ impl DatabaseManager {
             }
         }
         let conn = Connection::open(&self.db_path)?;
+        conn.busy_timeout(std::time::Duration::from_secs(5))?;
         conn.execute_batch("PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL; PRAGMA foreign_keys = ON;")?;
         Ok(conn)
     }
@@ -141,7 +154,8 @@ impl DatabaseManager {
                     dropped_interfaces TEXT NOT NULL
                 );
 
-                CREATE INDEX IF NOT EXISTS idx_messages_timestamp ON messages (timestamp DESC);
+                DROP INDEX IF EXISTS idx_messages_timestamp;
+                CREATE INDEX IF NOT EXISTS idx_messages_timestamp_id ON messages (timestamp DESC, id DESC);
                 CREATE INDEX IF NOT EXISTS idx_messages_src_ip ON messages (src_ip);
                 CREATE INDEX IF NOT EXISTS idx_messages_src_interface ON messages (src_interface);
                 CREATE INDEX IF NOT EXISTS idx_messages_disposition ON messages (disposition);
@@ -248,8 +262,8 @@ impl DatabaseManager {
         if let Some(ref ip) = filters.src_ip {
             let ip_trimmed = ip.trim();
             if !ip_trimmed.is_empty() {
-                conditions.push("m.src_ip LIKE ?".to_string());
-                sql_params.push(SqlValue::Text(format!("%{}%", ip_trimmed)));
+                conditions.push("m.src_ip LIKE ? ESCAPE '\\'".to_string());
+                sql_params.push(SqlValue::Text(format!("%{}%", escape_like(ip_trimmed))));
             }
         }
         if let Some(ref iface) = filters.src_interface {
@@ -262,8 +276,8 @@ impl DatabaseManager {
         if let Some(ref dst) = filters.dst_interface {
             let dst_trimmed = dst.trim();
             if !dst_trimmed.is_empty() {
-                conditions.push("(',' || m.forwarded_interfaces || ',') LIKE ?".to_string());
-                sql_params.push(SqlValue::Text(format!("%,{},%", dst_trimmed)));
+                conditions.push("(',' || m.forwarded_interfaces || ',') LIKE ? ESCAPE '\\'".to_string());
+                sql_params.push(SqlValue::Text(format!("%,{},%", escape_like(dst_trimmed))));
             }
         }
         if let Some(disp) = filters.disposition {
@@ -285,16 +299,16 @@ impl DatabaseManager {
         if let Some(ref q_search) = filters.query_search {
             let s = q_search.trim();
             if !s.is_empty() {
-                let pattern = format!("%{}%", s);
-                conditions.push("EXISTS (SELECT 1 FROM message_items mi WHERE mi.message_id = m.id AND mi.section = 0 AND mi.name LIKE ?)".to_string());
+                let pattern = format!("%{}%", escape_like(s));
+                conditions.push("EXISTS (SELECT 1 FROM message_items mi WHERE mi.message_id = m.id AND mi.section = 0 AND mi.name LIKE ? ESCAPE '\\')".to_string());
                 sql_params.push(SqlValue::Text(pattern));
             }
         }
         if let Some(ref r_search) = filters.response_search {
             let s = r_search.trim();
             if !s.is_empty() {
-                let pattern = format!("%{}%", s);
-                conditions.push("EXISTS (SELECT 1 FROM message_items mi WHERE mi.message_id = m.id AND mi.section IN (1, 2, 3) AND (mi.name LIKE ? OR mi.rdata_summary LIKE ?))".to_string());
+                let pattern = format!("%{}%", escape_like(s));
+                conditions.push("EXISTS (SELECT 1 FROM message_items mi WHERE mi.message_id = m.id AND mi.section IN (1, 2, 3) AND (mi.name LIKE ? ESCAPE '\\' OR mi.rdata_summary LIKE ? ESCAPE '\\'))".to_string());
                 sql_params.push(SqlValue::Text(pattern.clone()));
                 sql_params.push(SqlValue::Text(pattern));
             }
@@ -439,8 +453,8 @@ impl DatabaseManager {
 
     pub fn clear_tracking_data(&self) {
         if let Ok(conn) = self.get_connection() {
-            let _ = conn.execute("DELETE FROM messages", []);
             let _ = conn.execute("DELETE FROM message_items", []);
+            let _ = conn.execute("DELETE FROM messages", []);
         }
     }
 }

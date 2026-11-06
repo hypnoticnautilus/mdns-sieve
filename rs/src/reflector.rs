@@ -144,44 +144,65 @@ impl Reflector {
                         let mut kept_count = 0usize;
                         let mut dropped_count = 0usize;
 
+                        let mut q_kept = vec![false; packet.questions.len()];
+                        let mut ans_kept = vec![false; packet.answers.len()];
+                        let mut auth_kept = vec![false; packet.authorities.len()];
+                        let mut add_kept = vec![false; packet.additionals.len()];
+
                         for (idx, q) in packet.questions.iter().enumerate() {
                             if self.config.should_forward_question(&src_iface, dst_iface, &q.name) {
                                 rewritten_packet.questions.push(q.clone());
-                                q_routing[idx].0.push(dst_iface.clone());
+                                q_kept[idx] = true;
                                 kept_count += 1;
                             } else {
-                                q_routing[idx].1.push(dst_iface.clone());
                                 dropped_count += 1;
                             }
                         }
 
                         let mut filter_rrs = |rrs: &Vec<DNSResourceRecord>,
                                               out: &mut Vec<DNSResourceRecord>,
-                                              routing: &mut Vec<(Vec<String>, Vec<String>)>| {
+                                              kept_flags: &mut Vec<bool>| {
                             for (idx, rr) in rrs.iter().enumerate() {
                                 if self.config.should_forward_record(&src_iface, dst_iface, &rr.name, rr.target_name.as_deref(), is_resp) {
                                     out.push(rr.clone());
-                                    routing[idx].0.push(dst_iface.clone());
+                                    kept_flags[idx] = true;
                                     kept_count += 1;
                                 } else {
-                                    routing[idx].1.push(dst_iface.clone());
                                     dropped_count += 1;
                                 }
                             }
                         };
 
-                        filter_rrs(&packet.answers, &mut rewritten_packet.answers, &mut ans_routing);
-                        filter_rrs(&packet.authorities, &mut rewritten_packet.authorities, &mut auth_routing);
-                        filter_rrs(&packet.additionals, &mut rewritten_packet.additionals, &mut add_routing);
+                        filter_rrs(&packet.answers, &mut rewritten_packet.answers, &mut ans_kept);
+                        filter_rrs(&packet.authorities, &mut rewritten_packet.authorities, &mut auth_kept);
+                        filter_rrs(&packet.additionals, &mut rewritten_packet.additionals, &mut add_kept);
 
+                        let mut packet_sent = false;
                         if kept_count > 0 {
                             if dropped_count == 0 {
                                 // Unmodified packet: send raw bytes directly
                                 let _ = dst_sock.send_to(&data, (MDNS_ADDR, MDNS_PORT)).await;
+                                packet_sent = true;
                             } else if let Ok(rewritten_data) = rewritten_packet.serialize() {
                                 let _ = dst_sock.send_to(&rewritten_data, (MDNS_ADDR, MDNS_PORT)).await;
+                                packet_sent = true;
                             }
                         }
+
+                        let record_outcome = |kept_flags: &[bool], routing: &mut Vec<(Vec<String>, Vec<String>)>| {
+                            for (idx, &kept) in kept_flags.iter().enumerate() {
+                                if packet_sent && kept {
+                                    routing[idx].0.push(dst_iface.clone());
+                                } else {
+                                    routing[idx].1.push(dst_iface.clone());
+                                }
+                            }
+                        };
+
+                        record_outcome(&q_kept, &mut q_routing);
+                        record_outcome(&ans_kept, &mut ans_routing);
+                        record_outcome(&auth_kept, &mut auth_routing);
+                        record_outcome(&add_kept, &mut add_routing);
                     }
                 }
 
@@ -272,8 +293,15 @@ impl Reflector {
                     items,
                 };
 
-                let mut mgr = self.manager.lock().await;
-                mgr.record_message(message_record);
+                let flush_task = {
+                    let mut mgr = self.manager.lock().await;
+                    mgr.record_message_deferred(message_record)
+                };
+                if let Some(task) = flush_task {
+                    let _ = tokio::task::spawn_blocking(move || {
+                        task.execute();
+                    });
+                }
             }
         }
     }

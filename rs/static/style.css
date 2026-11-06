@@ -1207,8 +1207,7 @@ td:hover .copy-name-btn {
   content: attr(data-tooltip);
   position: absolute;
   bottom: calc(100% + 7px);
-  left: 50%;
-  transform: translateX(-50%);
+  left: 0;
   background-color: #0f172a;
   color: #f8fafc;
   border: 1px solid rgba(255, 255, 255, 0.15);
@@ -1220,6 +1219,12 @@ td:hover .copy-name-btn {
   z-index: 500;
   pointer-events: none;
   box-shadow: 0 4px 12px rgba(0, 0, 0, 0.35);
+}
+
+.history-table tbody tr:first-child .disp-dot[data-tooltip]:hover::after,
+.detail-card-table tbody tr:first-child .disp-dot[data-tooltip]:hover::after {
+  bottom: auto;
+  top: calc(100% + 7px);
 }
 
 .preview-items-wrap {
