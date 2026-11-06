@@ -197,6 +197,7 @@ pub struct WebServerConfig {
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct TrackingConfig {
     pub enabled: bool,
+    #[serde(default = "default_max_records")]
     pub max_records: usize,
     #[serde(default = "default_db_path")]
     pub db_path: String,
@@ -204,11 +205,26 @@ pub struct TrackingConfig {
     pub flush_interval_seconds: u64,
     #[serde(default = "default_retention_days")]
     pub retention_days: u32,
+    #[serde(default)]
+    pub history_retention_days: Option<u32>,
+    #[serde(default)]
+    pub max_history_records: Option<usize>,
+}
+
+impl TrackingConfig {
+    pub fn effective_retention_days(&self) -> u32 {
+        self.history_retention_days.unwrap_or(self.retention_days)
+    }
+
+    pub fn effective_max_records(&self) -> usize {
+        self.max_history_records.unwrap_or(self.max_records)
+    }
 }
 
 fn default_db_path() -> String { "/var/lib/mdns-sieve/responses.db".to_string() }
 fn default_flush_interval() -> u64 { 3600 }
 fn default_retention_days() -> u32 { 7 }
+fn default_max_records() -> usize { 50000 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct AppConfigData {

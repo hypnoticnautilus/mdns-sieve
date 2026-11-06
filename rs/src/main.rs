@@ -29,6 +29,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let manager = Arc::new(Mutex::new(CommandServerManager::new(
         config_arc.web_server.clone(),
         config_arc.tracking.clone(),
+        config_arc.interfaces.clone(),
     )));
 
     if let Some(ws_cfg) = &config_arc.web_server {
@@ -44,7 +45,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let reflector = Reflector::new(config_arc.clone(), manager.clone());
     
-    let reflector_handle = tokio::spawn(async move {
+    let _reflector_handle = tokio::spawn(async move {
         reflector.run().await;
     });
 
