@@ -651,7 +651,7 @@ async function executeClearStats() {
 }
 
 /* ==========================================================================
-   Main View Switcher (Live Dashboard / Message History)
+   Main View Switcher (Live Dashboard / Message History / Configuration)
    ========================================================================== */
 let currentMainView = 'live';
 
@@ -659,20 +659,23 @@ function switchMainView(view) {
   currentMainView = view;
   const btnLive = document.getElementById('viewBtnLive');
   const btnHistory = document.getElementById('viewBtnHistory');
+  const btnConfig = document.getElementById('viewBtnConfig');
   const viewLive = document.getElementById('liveDashboardView');
   const viewHistory = document.getElementById('messageHistoryView');
+  const viewConfig = document.getElementById('configurationView');
 
-  if (view === 'live') {
-    btnLive.classList.add('active');
-    btnHistory.classList.remove('active');
-    viewLive.classList.remove('hidden');
-    viewHistory.classList.add('hidden');
-  } else {
-    btnLive.classList.remove('active');
-    btnHistory.classList.add('active');
-    viewLive.classList.add('hidden');
-    viewHistory.classList.remove('hidden');
+  btnLive.classList.toggle('active', view === 'live');
+  btnHistory.classList.toggle('active', view === 'history');
+  if (btnConfig) btnConfig.classList.toggle('active', view === 'config');
+
+  viewLive.classList.toggle('hidden', view !== 'live');
+  viewHistory.classList.toggle('hidden', view !== 'history');
+  if (viewConfig) viewConfig.classList.toggle('hidden', view !== 'config');
+
+  if (view === 'history') {
     loadHistoryData(currentHistoryPage);
+  } else if (view === 'config') {
+    ensureConfigViewInitialized();
   }
 
   lucide.createIcons();
@@ -903,7 +906,7 @@ function renderHistoryTableRows() {
       detailTr.className = 'history-detail-tr';
       const msgDispInfo = dispositionInfo(record.disposition, record.forwarded_interfaces, record.dropped_interfaces);
 
-      let questionsHtml = '<tr><td colspan="5" class="table-empty" style="padding: 12px 0 !important;">No questions in packet.</td></tr>';
+      let questionsHtml = '<tr><td colspan="6" class="table-empty" style="padding: 12px 0 !important;">No questions in packet.</td></tr>';
       if (questions.length > 0) {
         questionsHtml = questions.map(q => {
           const qDot = renderDispositionDot(q.disposition, q.forwarded_interfaces, q.dropped_interfaces, false);
@@ -924,12 +927,24 @@ function renderHistoryTableRows() {
               <td><span class="badge-type query">${escapeHtml(qType)}</span></td>
               <td>${escapeHtml(qClass)}</td>
               <td><div style="display: flex; gap: 4px; flex-wrap: wrap;">${qRoutes}</div></td>
+              <td style="text-align: right; width: 72px;">
+                <button class="btn-quick-rule" title="Create filtering rule from this question"
+                  data-src="${escapeHtml(record.src_interface)}"
+                  data-disp="${q.disposition}"
+                  data-section="questions"
+                  data-name="${escapeHtml(q.name)}"
+                  data-rrtype="${q.rr_type}"
+                  onclick="createQuickRuleFromHistory(this, event)">
+                  <i data-lucide="plus"></i>
+                  <span>Rule</span>
+                </button>
+              </td>
             </tr>
           `;
         }).join('');
       }
 
-      let answersHtml = '<tr><td colspan="7" class="table-empty" style="padding: 12px 0 !important;">No resource records in packet.</td></tr>';
+      let answersHtml = '<tr><td colspan="8" class="table-empty" style="padding: 12px 0 !important;">No resource records in packet.</td></tr>';
       if (rrItems.length > 0) {
         answersHtml = rrItems.map(r => {
           const rDot = renderDispositionDot(r.disposition, r.forwarded_interfaces, r.dropped_interfaces, false);
@@ -962,6 +977,18 @@ function renderHistoryTableRows() {
               <td>${escapeHtml(ttlText)}</td>
               <td>${rdataHtml}</td>
               <td><div style="display: flex; gap: 4px; flex-wrap: wrap;">${rRoutes}</div></td>
+              <td style="text-align: right; width: 72px;">
+                <button class="btn-quick-rule" title="Create filtering rule from this resource record"
+                  data-src="${escapeHtml(record.src_interface)}"
+                  data-disp="${r.disposition}"
+                  data-section="answers"
+                  data-name="${escapeHtml(r.name)}"
+                  data-rrtype="${r.rr_type}"
+                  onclick="createQuickRuleFromHistory(this, event)">
+                  <i data-lucide="plus"></i>
+                  <span>Rule</span>
+                </button>
+              </td>
             </tr>
           `;
         }).join('');
@@ -1004,6 +1031,7 @@ function renderHistoryTableRows() {
                       <th>Type</th>
                       <th>Class</th>
                       <th>Routing</th>
+                      <th style="width: 72px; text-align: right;">Action</th>
                     </tr>
                   </thead>
                   <tbody>${questionsHtml}</tbody>
@@ -1025,6 +1053,7 @@ function renderHistoryTableRows() {
                       <th>TTL</th>
                       <th>Decoded Data</th>
                       <th>Routing</th>
+                      <th style="width: 72px; text-align: right;">Action</th>
                     </tr>
                   </thead>
                   <tbody>${answersHtml}</tbody>
@@ -1040,3 +1069,1118 @@ function renderHistoryTableRows() {
 
   lucide.createIcons();
 }
+
+/* ==========================================================================
+   Configuration Manager & Visual Rule Builder
+   ========================================================================== */
+let configInitialized = false;
+let savedConfigData = null;
+let draftConfigData = null;
+let lastServerYaml = '';
+let configFilePath = '/etc/mdns-sieve.yaml';
+let detectedSystemInterfaces = [];
+let serverRestartRequired = false;
+let boundWebServer = null;
+let highlightedRuleIndex = null;
+let draggedRuleIndex = null;
+
+function defaultConfigTemplate() {
+  return {
+    interfaces: [],
+    default_action: 'forward',
+    rewrite_mixed_packets: false,
+    forward_known_answers: false,
+    web_server: {
+      enabled: true,
+      host: '0.0.0.0',
+      port: 8080,
+    },
+    tracking: {
+      enabled: true,
+      max_records: 50000,
+      db_path: '/var/lib/mdns-sieve/responses.db',
+      flush_interval_seconds: 3600,
+      retention_days: 7,
+    },
+    rules: [],
+  };
+}
+
+function normalizeConfigData(raw) {
+  const base = defaultConfigTemplate();
+  if (!raw || typeof raw !== 'object') return base;
+
+  const interfaces = Array.isArray(raw.interfaces)
+    ? raw.interfaces.map(s => String(s).trim()).filter(Boolean)
+    : [];
+
+  const default_action = String(raw.default_action || 'forward').toLowerCase() === 'drop' ? 'drop' : 'forward';
+  const rewrite_mixed_packets = Boolean(raw.rewrite_mixed_packets);
+  const forward_known_answers = Boolean(raw.forward_known_answers);
+
+  const ws = raw.web_server || {};
+  const web_server = {
+    enabled: true,
+    host: String(ws.host || '0.0.0.0').trim() || '0.0.0.0',
+    port: Number(ws.port) > 0 ? Number(ws.port) : 8080,
+  };
+
+  const tr = raw.tracking || {};
+  const retention = tr.retention_days !== undefined && tr.retention_days !== null
+    ? Number(tr.retention_days)
+    : (tr.history_retention_days !== undefined && tr.history_retention_days !== null ? Number(tr.history_retention_days) : 7);
+  const maxRecs = tr.max_records !== undefined && tr.max_records !== null
+    ? Number(tr.max_records)
+    : (tr.max_history_records !== undefined && tr.max_history_records !== null ? Number(tr.max_history_records) : 50000);
+
+  const tracking = {
+    enabled: tr.enabled !== undefined ? Boolean(tr.enabled) : true,
+    max_records: !isNaN(maxRecs) && maxRecs >= 0 ? maxRecs : 50000,
+    db_path: String(tr.db_path || '/var/lib/mdns-sieve/responses.db').trim() || '/var/lib/mdns-sieve/responses.db',
+    flush_interval_seconds: Number(tr.flush_interval_seconds) > 0 ? Number(tr.flush_interval_seconds) : 3600,
+    retention_days: !isNaN(retention) && retention > 0 ? retention : 7,
+  };
+
+  const rules = Array.isArray(raw.rules)
+    ? raw.rules.map(normalizeRuleItem)
+    : [];
+
+  return {
+    interfaces,
+    default_action,
+    rewrite_mixed_packets,
+    forward_known_answers,
+    web_server,
+    tracking,
+    rules,
+  };
+}
+
+function normalizeEndpointList(val) {
+  if (!val) return ['*'];
+  if (Array.isArray(val)) {
+    const cleaned = val.map(v => String(v).trim()).filter(Boolean);
+    if (cleaned.length === 0 || cleaned.includes('*')) return ['*'];
+    return Array.from(new Set(cleaned));
+  }
+  const s = String(val).trim();
+  if (!s || s === '*') return ['*'];
+  return [s];
+}
+
+function serializeEndpointValue(list) {
+  const arr = normalizeEndpointList(list);
+  if (arr.length === 1) return arr[0];
+  return arr;
+}
+
+function normalizeRuleItem(r) {
+  if (!r || typeof r !== 'object') {
+    return {
+      action: 'forward',
+      section: 'any',
+      src: '*',
+      dst: '*',
+      services: [],
+      hosts: [],
+    };
+  }
+  const action = String(r.action || 'forward').toLowerCase() === 'drop' ? 'drop' : 'forward';
+  const rawSec = String(r.section || 'any').toLowerCase();
+  const section = (rawSec === 'questions' || rawSec === 'answers') ? rawSec : 'any';
+  const services = Array.isArray(r.services) ? r.services.map(s => String(s).trim()).filter(Boolean) : [];
+  const hosts = Array.isArray(r.hosts) ? r.hosts.map(s => String(s).trim()).filter(Boolean) : [];
+  const src = serializeEndpointValue(r.src);
+  const dst = serializeEndpointValue(r.dst);
+
+  return {
+    action,
+    section,
+    src,
+    dst,
+    services,
+    hosts,
+  };
+}
+
+function cloneConfig(cfg) {
+  return normalizeConfigData(JSON.parse(JSON.stringify(cfg)));
+}
+
+function isConfigDirty() {
+  if (!savedConfigData || !draftConfigData) return false;
+  return JSON.stringify(savedConfigData) !== JSON.stringify(draftConfigData);
+}
+
+async function ensureConfigViewInitialized() {
+  if (!configInitialized) {
+    configInitialized = true;
+    await Promise.all([loadConfigFromServer(), loadSystemInterfaces()]);
+  } else {
+    loadSystemInterfaces();
+    renderConfigView();
+  }
+}
+
+async function loadConfigFromServer() {
+  try {
+    const res = await fetch('/api/config');
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const payload = await res.json();
+    if (payload.status !== 'ok' || !payload.data) {
+      throw new Error(payload.error || 'Failed to load configuration');
+    }
+
+    const data = payload.data;
+    savedConfigData = normalizeConfigData(data.config);
+    draftConfigData = cloneConfig(savedConfigData);
+    lastServerYaml = data.yaml || '';
+    configFilePath = data.config_path || '/etc/mdns-sieve.yaml';
+    serverRestartRequired = Boolean(data.restart_required);
+    boundWebServer = data.bound_web_server || null;
+
+    renderConfigView();
+  } catch (err) {
+    console.error('Failed to load config from server:', err);
+    if (!savedConfigData) {
+      savedConfigData = defaultConfigTemplate();
+      draftConfigData = cloneConfig(savedConfigData);
+    }
+    showConfigFeedback('error', `Failed to load configuration: ${err.message}`);
+    renderConfigView();
+  }
+}
+
+async function loadSystemInterfaces() {
+  try {
+    const res = await fetch('/api/interfaces');
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const payload = await res.json();
+    if (payload.status === 'ok' && payload.data) {
+      detectedSystemInterfaces = Array.isArray(payload.data.detected) ? payload.data.detected : [];
+      renderInterfacesSection();
+      renderRulesList();
+      lucide.createIcons();
+    }
+  } catch (err) {
+    console.error('Failed to scan system interfaces:', err);
+  }
+}
+
+function updateDirtyStateUI() {
+  const dirty = isConfigDirty();
+  const navBadge = document.getElementById('configDirtyBadge');
+  const stateBadge = document.getElementById('configStateBadge');
+  const stateText = document.getElementById('configStateText');
+  const btnDiscard = document.getElementById('btnDiscardConfig');
+  const btnSave = document.getElementById('btnSaveConfig');
+  const pathEl = document.getElementById('configFilePath');
+  const restartBanner = document.getElementById('configRestartBanner');
+
+  if (pathEl) pathEl.textContent = configFilePath;
+
+  if (navBadge) {
+    navBadge.classList.toggle('hidden', !dirty);
+  }
+
+  if (stateBadge && stateText) {
+    if (dirty) {
+      stateBadge.className = 'config-state-badge dirty';
+      stateText.textContent = 'Unsaved configuration changes';
+    } else {
+      stateBadge.className = 'config-state-badge saved';
+      stateText.textContent = 'All changes saved & active';
+    }
+  }
+
+  if (btnDiscard) btnDiscard.disabled = !dirty;
+  if (btnSave) btnSave.disabled = !dirty;
+
+  if (restartBanner) {
+    restartBanner.classList.toggle('hidden', !serverRestartRequired);
+  }
+}
+
+function renderConfigView() {
+  if (!draftConfigData) return;
+
+  updateDirtyStateUI();
+  renderInterfacesSection();
+  renderGlobalPolicySection();
+  renderRulesList();
+  renderTrackingAndWebSection();
+  lucide.createIcons();
+}
+
+function allKnownInterfaceNames() {
+  const names = new Set();
+  detectedSystemInterfaces.forEach(item => {
+    if (item && item.name) names.add(item.name);
+  });
+  if (draftConfigData && Array.isArray(draftConfigData.interfaces)) {
+    draftConfigData.interfaces.forEach(iface => names.add(iface));
+  }
+  return Array.from(names);
+}
+
+function renderInterfacesSection() {
+  if (!draftConfigData) return;
+  const detectedWrap = document.getElementById('detectedInterfacesContainer');
+  const activeWrap = document.getElementById('activeInterfacesContainer');
+  const activeSet = new Set(draftConfigData.interfaces);
+
+  if (detectedWrap) {
+    if (detectedSystemInterfaces.length === 0) {
+      detectedWrap.innerHTML = '<span class="help-text">No physical/virtual network interfaces detected in /sys/class/net. Use the custom input below.</span>';
+    } else {
+      detectedWrap.innerHTML = detectedSystemInterfaces.map(iface => {
+        const isSelected = activeSet.has(iface.name);
+        const oper = String(iface.operstate || 'unknown').toLowerCase();
+        const isUp = oper === 'up' || oper === 'unknown';
+        const badgeClass = isUp ? 'up' : 'down';
+        const badgeLabel = oper === 'up' ? 'UP' : (oper === 'down' ? 'DOWN' : oper.toUpperCase());
+        const iconName = isSelected ? 'check-square' : 'square';
+        return `
+          <div class="iface-chip ${isSelected ? 'selected' : ''}" onclick="toggleInterfaceSelection('${escapeHtml(iface.name)}')" title="Click to ${isSelected ? 'remove' : 'add'} ${escapeHtml(iface.name)}">
+            <i data-lucide="${iconName}"></i>
+            <span>${escapeHtml(iface.name)}</span>
+            <span class="iface-oper-badge ${badgeClass}">${escapeHtml(badgeLabel)}</span>
+          </div>
+        `;
+      }).join('');
+    }
+  }
+
+  if (activeWrap) {
+    if (draftConfigData.interfaces.length === 0) {
+      activeWrap.innerHTML = '<span class="help-text" style="color: var(--color-warning);">No interfaces selected. Select at least two interfaces to reflect mDNS packets between networks.</span>';
+    } else {
+      activeWrap.innerHTML = draftConfigData.interfaces.map(name => `
+        <span class="iface-active-pill">
+          <i data-lucide="network" style="width: 13px; height: 13px; color: var(--color-primary);"></i>
+          <span>${escapeHtml(name)}</span>
+          <button type="button" onclick="removeConfiguredInterface('${escapeHtml(name)}')" title="Remove ${escapeHtml(name)}">
+            <i data-lucide="x"></i>
+          </button>
+        </span>
+      `).join('');
+    }
+  }
+}
+
+function toggleInterfaceSelection(ifaceName) {
+  if (!draftConfigData) return;
+  const idx = draftConfigData.interfaces.indexOf(ifaceName);
+  if (idx >= 0) {
+    draftConfigData.interfaces.splice(idx, 1);
+  } else {
+    draftConfigData.interfaces.push(ifaceName);
+  }
+  updateDirtyStateUI();
+  renderInterfacesSection();
+  renderRulesList();
+  lucide.createIcons();
+}
+
+function removeConfiguredInterface(ifaceName) {
+  if (!draftConfigData) return;
+  draftConfigData.interfaces = draftConfigData.interfaces.filter(i => i !== ifaceName);
+  updateDirtyStateUI();
+  renderInterfacesSection();
+  renderRulesList();
+  lucide.createIcons();
+}
+
+function addCustomInterface() {
+  if (!draftConfigData) return;
+  const input = document.getElementById('customInterfaceInput');
+  if (!input) return;
+  const raw = input.value.trim();
+  if (!raw) return;
+
+  if (/\s|\/|\\/.test(raw)) {
+    showConfigFeedback('error', `Invalid interface name "${raw}": cannot contain whitespace or slashes.`);
+    return;
+  }
+
+  if (!draftConfigData.interfaces.includes(raw)) {
+    draftConfigData.interfaces.push(raw);
+  }
+  input.value = '';
+  updateDirtyStateUI();
+  renderInterfacesSection();
+  renderRulesList();
+  lucide.createIcons();
+}
+
+function renderGlobalPolicySection() {
+  if (!draftConfigData) return;
+  const btnFwd = document.getElementById('btnDefaultForward');
+  const btnDrop = document.getElementById('btnDefaultDrop');
+  const chkRewrite = document.getElementById('cfgRewriteMixed');
+  const chkKnown = document.getElementById('cfgForwardKnownAnswers');
+
+  const isFwd = draftConfigData.default_action !== 'drop';
+  if (btnFwd) btnFwd.classList.toggle('active', isFwd);
+  if (btnDrop) btnDrop.classList.toggle('active', !isFwd);
+  if (chkRewrite) chkRewrite.checked = Boolean(draftConfigData.rewrite_mixed_packets);
+  if (chkKnown) chkKnown.checked = Boolean(draftConfigData.forward_known_answers);
+}
+
+function setConfigDefaultAction(action) {
+  if (!draftConfigData) return;
+  draftConfigData.default_action = action === 'drop' ? 'drop' : 'forward';
+  updateDirtyStateUI();
+  renderGlobalPolicySection();
+}
+
+function onGlobalPolicyChange() {
+  if (!draftConfigData) return;
+  const chkRewrite = document.getElementById('cfgRewriteMixed');
+  const chkKnown = document.getElementById('cfgForwardKnownAnswers');
+  if (chkRewrite) draftConfigData.rewrite_mixed_packets = Boolean(chkRewrite.checked);
+  if (chkKnown) draftConfigData.forward_known_answers = Boolean(chkKnown.checked);
+  updateDirtyStateUI();
+}
+
+function renderTrackingAndWebSection() {
+  if (!draftConfigData) return;
+  const tr = draftConfigData.tracking || {};
+  const ws = draftConfigData.web_server || {};
+
+  const chkEnabled = document.getElementById('cfgTrackingEnabled');
+  const fieldsWrap = document.getElementById('cfgTrackingFieldsWrap');
+  const inpRetention = document.getElementById('cfgTrackingRetention');
+  const inpMaxRecords = document.getElementById('cfgTrackingMaxRecords');
+  const inpFlush = document.getElementById('cfgTrackingFlushInterval');
+  const inpDbPath = document.getElementById('cfgTrackingDbPath');
+
+  if (chkEnabled) chkEnabled.checked = Boolean(tr.enabled);
+  if (fieldsWrap) {
+    fieldsWrap.style.opacity = tr.enabled ? '1' : '0.5';
+  }
+  if (inpRetention) inpRetention.value = tr.retention_days ?? 7;
+  if (inpMaxRecords) inpMaxRecords.value = tr.max_records ?? 50000;
+  if (inpFlush) inpFlush.value = tr.flush_interval_seconds ?? 3600;
+  if (inpDbPath) inpDbPath.value = tr.db_path || '/var/lib/mdns-sieve/responses.db';
+
+  const inpHost = document.getElementById('cfgWebHost');
+  const inpPort = document.getElementById('cfgWebPort');
+  if (inpHost) inpHost.value = ws.host || '0.0.0.0';
+  if (inpPort) inpPort.value = ws.port || 8080;
+}
+
+function onTrackingConfigChange() {
+  if (!draftConfigData) return;
+  const chkEnabled = document.getElementById('cfgTrackingEnabled');
+  const fieldsWrap = document.getElementById('cfgTrackingFieldsWrap');
+  const inpRetention = document.getElementById('cfgTrackingRetention');
+  const inpMaxRecords = document.getElementById('cfgTrackingMaxRecords');
+  const inpFlush = document.getElementById('cfgTrackingFlushInterval');
+  const inpDbPath = document.getElementById('cfgTrackingDbPath');
+
+  const enabled = chkEnabled ? Boolean(chkEnabled.checked) : true;
+  if (fieldsWrap) {
+    fieldsWrap.style.opacity = enabled ? '1' : '0.5';
+  }
+
+  const retention = Math.max(1, parseInt(inpRetention ? inpRetention.value : '7', 10) || 7);
+  const maxRecords = Math.max(0, parseInt(inpMaxRecords ? inpMaxRecords.value : '50000', 10) || 0);
+  const flushSecs = Math.max(1, parseInt(inpFlush ? inpFlush.value : '3600', 10) || 3600);
+  const dbPath = (inpDbPath ? inpDbPath.value.trim() : '') || '/var/lib/mdns-sieve/responses.db';
+
+  draftConfigData.tracking = {
+    enabled,
+    max_records: maxRecords,
+    db_path: dbPath,
+    flush_interval_seconds: flushSecs,
+    retention_days: retention,
+  };
+  updateDirtyStateUI();
+}
+
+function onWebServerConfigChange() {
+  if (!draftConfigData) return;
+  const inpHost = document.getElementById('cfgWebHost');
+  const inpPort = document.getElementById('cfgWebPort');
+  const host = (inpHost ? inpHost.value.trim() : '') || '0.0.0.0';
+  const port = Math.min(65535, Math.max(1, parseInt(inpPort ? inpPort.value : '8080', 10) || 8080));
+
+  draftConfigData.web_server = {
+    enabled: true,
+    host,
+    port,
+  };
+  updateDirtyStateUI();
+}
+
+function renderRulesList() {
+  if (!draftConfigData) return;
+  const listEl = document.getElementById('configRulesList');
+  const countBadge = document.getElementById('configRulesCountBadge');
+  if (!listEl) return;
+
+  const rules = draftConfigData.rules || [];
+  if (countBadge) {
+    countBadge.textContent = `${rules.length} ${rules.length === 1 ? 'rule' : 'rules'}`;
+  }
+
+  if (rules.length === 0) {
+    listEl.innerHTML = `
+      <div class="table-empty" style="padding: 36px 20px !important; border: 1px dashed var(--border-color); border-radius: 12px;">
+        <p style="margin-bottom: 10px; font-weight: 600; color: var(--text-primary);">No filtering rules configured</p>
+        <p style="font-size: 13px; color: var(--text-secondary); margin-bottom: 16px;">
+          All mDNS traffic between configured interfaces will use the global default action (<strong>${escapeHtml(draftConfigData.default_action.toUpperCase())}</strong>).
+        </p>
+        <button onclick="addConfigRule()" class="btn btn-primary" style="margin: 0 auto;">
+          <i data-lucide="plus"></i>
+          <span>Create First Rule</span>
+        </button>
+      </div>
+    `;
+    return;
+  }
+
+  const candidateIfaces = allKnownInterfaceNames();
+
+  listEl.innerHTML = rules.map((rule, idx) => {
+    const isFwd = rule.action !== 'drop';
+    const srcList = normalizeEndpointList(rule.src);
+    const dstList = normalizeEndpointList(rule.dst);
+
+    // Include any rule-specific custom interfaces so they remain visible as pills
+    const srcCandidates = Array.from(new Set([...candidateIfaces, ...srcList.filter(i => i !== '*')]));
+    const dstCandidates = Array.from(new Set([...candidateIfaces, ...dstList.filter(i => i !== '*')]));
+
+    const srcPillsHtml = [
+      `<span class="rule-iface-pill ${srcList.includes('*') ? 'active' : ''}" onclick="toggleRuleInterface(${idx}, 'src', '*')">* (Any)</span>`,
+      ...srcCandidates.map(iface => `
+        <span class="rule-iface-pill ${!srcList.includes('*') && srcList.includes(iface) ? 'active' : ''}" onclick="toggleRuleInterface(${idx}, 'src', '${escapeHtml(iface)}')">${escapeHtml(iface)}</span>
+      `),
+    ].join('');
+
+    const dstPillsHtml = [
+      `<span class="rule-iface-pill ${dstList.includes('*') ? 'active' : ''}" onclick="toggleRuleInterface(${idx}, 'dst', '*')">* (Any)</span>`,
+      ...dstCandidates.map(iface => `
+        <span class="rule-iface-pill ${!dstList.includes('*') && dstList.includes(iface) ? 'active' : ''}" onclick="toggleRuleInterface(${idx}, 'dst', '${escapeHtml(iface)}')">${escapeHtml(iface)}</span>
+      `),
+    ].join('');
+
+    const serviceTagsHtml = (rule.services || []).map((svc, tIdx) => `
+      <span class="pattern-tag">
+        <span>${escapeHtml(svc)}</span>
+        <button type="button" onclick="removeRulePatternTag(${idx}, 'services', ${tIdx})" title="Remove pattern">&times;</button>
+      </span>
+    `).join('');
+
+    const hostTagsHtml = (rule.hosts || []).map((host, tIdx) => `
+      <span class="pattern-tag">
+        <span>${escapeHtml(host)}</span>
+        <button type="button" onclick="removeRulePatternTag(${idx}, 'hosts', ${tIdx})" title="Remove pattern">&times;</button>
+      </span>
+    `).join('');
+
+    const highlightClass = highlightedRuleIndex === idx ? 'highlight-new' : '';
+
+    return `
+      <div class="rule-card ${isFwd ? 'rule-forward' : 'rule-drop'} ${highlightClass}"
+           id="configRuleCard_${idx}"
+           draggable="true"
+           ondragstart="onRuleDragStart(event, ${idx})"
+           ondragover="onRuleDragOver(event, ${idx})"
+           ondragleave="onRuleDragLeave(event, ${idx})"
+           ondrop="onRuleDrop(event, ${idx})"
+           ondragend="onRuleDragEnd(event)">
+        <div class="rule-card-top">
+          <div class="rule-top-left">
+            <span class="rule-drag-handle" title="Drag to reorder rule">
+              <i data-lucide="grip-vertical"></i>
+            </span>
+            <span class="rule-index-badge">Rule #${idx + 1}</span>
+            <div class="rule-action-pill-group">
+              <button type="button" class="rule-action-opt forward ${isFwd ? 'active' : ''}" onclick="setRuleAction(${idx}, 'forward')">Forward</button>
+              <button type="button" class="rule-action-opt drop ${!isFwd ? 'active' : ''}" onclick="setRuleAction(${idx}, 'drop')">Drop</button>
+            </div>
+            <div style="display: inline-flex; align-items: center; gap: 6px;">
+              <span class="rule-field-label" style="margin: 0;">Section:</span>
+              <select class="filter-select select-sm" style="width: auto; min-width: 135px;" onchange="setRuleSection(${idx}, this.value)">
+                <option value="any" ${rule.section === 'any' ? 'selected' : ''}>Any (All Records)</option>
+                <option value="questions" ${rule.section === 'questions' ? 'selected' : ''}>Questions Only</option>
+                <option value="answers" ${rule.section === 'answers' ? 'selected' : ''}>Answers Only</option>
+              </select>
+            </div>
+          </div>
+          <div class="rule-top-right">
+            <button type="button" class="btn btn-icon btn-sm" onclick="moveConfigRule(${idx}, -1)" ${idx === 0 ? 'disabled' : ''} title="Move Rule Up">
+              <i data-lucide="arrow-up"></i>
+            </button>
+            <button type="button" class="btn btn-icon btn-sm" onclick="moveConfigRule(${idx}, 1)" ${idx === rules.length - 1 ? 'disabled' : ''} title="Move Rule Down">
+              <i data-lucide="arrow-down"></i>
+            </button>
+            <button type="button" class="btn btn-icon btn-sm" onclick="duplicateConfigRule(${idx})" title="Duplicate Rule">
+              <i data-lucide="copy"></i>
+            </button>
+            <button type="button" class="btn btn-icon btn-sm" style="color: var(--color-red);" onclick="deleteConfigRule(${idx})" title="Delete Rule">
+              <i data-lucide="trash-2"></i>
+            </button>
+          </div>
+        </div>
+
+        <div class="rule-body-grid">
+          <div class="rule-field-group">
+            <label class="rule-field-label">
+              <i data-lucide="log-in" style="width: 13px; height: 13px;"></i>
+              <span>Ingress Source Interface (src)</span>
+            </label>
+            <div class="rule-iface-selector">${srcPillsHtml}</div>
+          </div>
+
+          <div class="rule-field-group">
+            <label class="rule-field-label">
+              <i data-lucide="log-out" style="width: 13px; height: 13px;"></i>
+              <span>Egress Destination Interface (dst)</span>
+            </label>
+            <div class="rule-iface-selector">${dstPillsHtml}</div>
+          </div>
+
+          <div class="rule-field-group">
+            <label class="rule-field-label">
+              <i data-lucide="radio" style="width: 13px; height: 13px;"></i>
+              <span>Service Patterns (PTR / SRV / TXT / NSEC — wildcards supported)</span>
+            </label>
+            <div class="tag-editor-box" onclick="this.querySelector('input').focus()">
+              ${serviceTagsHtml}
+              <input type="text" class="tag-inline-input"
+                     placeholder="${(rule.services || []).length === 0 ? 'e.g. *.local, *_googlecast._tcp.local (Enter to add)' : 'Add pattern...'}"
+                     onkeydown="handleRuleTagInputKeydown(event, ${idx}, 'services')"
+                     onblur="handleRuleTagInputBlur(this, ${idx}, 'services')">
+            </div>
+          </div>
+
+          <div class="rule-field-group">
+            <label class="rule-field-label">
+              <i data-lucide="server" style="width: 13px; height: 13px;"></i>
+              <span>Host Patterns (A / AAAA records — wildcards supported)</span>
+            </label>
+            <div class="tag-editor-box" onclick="this.querySelector('input').focus()">
+              ${hostTagsHtml}
+              <input type="text" class="tag-inline-input"
+                     placeholder="${(rule.hosts || []).length === 0 ? 'e.g. printer.local, *.iot.local (Enter to add)' : 'Add host...'}"
+                     onkeydown="handleRuleTagInputKeydown(event, ${idx}, 'hosts')"
+                     onblur="handleRuleTagInputBlur(this, ${idx}, 'hosts')">
+            </div>
+          </div>
+        </div>
+      </div>
+    `;
+  }).join('');
+}
+
+function addConfigRule(initialRule = null, insertAtTop = false) {
+  if (!draftConfigData) return;
+  const newRule = normalizeRuleItem(initialRule || {
+    action: draftConfigData.default_action === 'forward' ? 'drop' : 'forward',
+    section: 'any',
+    src: '*',
+    dst: '*',
+    services: ['*.local'],
+    hosts: [],
+  });
+
+  if (insertAtTop) {
+    draftConfigData.rules.unshift(newRule);
+    highlightedRuleIndex = 0;
+  } else {
+    draftConfigData.rules.push(newRule);
+    highlightedRuleIndex = draftConfigData.rules.length - 1;
+  }
+
+  updateDirtyStateUI();
+  renderRulesList();
+  lucide.createIcons();
+
+  setTimeout(() => {
+    highlightedRuleIndex = null;
+  }, 2400);
+}
+
+function duplicateConfigRule(idx) {
+  if (!draftConfigData || !draftConfigData.rules[idx]) return;
+  const copy = normalizeRuleItem(JSON.parse(JSON.stringify(draftConfigData.rules[idx])));
+  draftConfigData.rules.splice(idx + 1, 0, copy);
+  highlightedRuleIndex = idx + 1;
+  updateDirtyStateUI();
+  renderRulesList();
+  lucide.createIcons();
+  setTimeout(() => { highlightedRuleIndex = null; }, 2400);
+}
+
+function deleteConfigRule(idx) {
+  if (!draftConfigData || !draftConfigData.rules[idx]) return;
+  draftConfigData.rules.splice(idx, 1);
+  updateDirtyStateUI();
+  renderRulesList();
+  lucide.createIcons();
+}
+
+function moveConfigRule(idx, delta) {
+  if (!draftConfigData) return;
+  const target = idx + delta;
+  if (target < 0 || target >= draftConfigData.rules.length) return;
+  const [item] = draftConfigData.rules.splice(idx, 1);
+  draftConfigData.rules.splice(target, 0, item);
+  highlightedRuleIndex = target;
+  updateDirtyStateUI();
+  renderRulesList();
+  lucide.createIcons();
+  setTimeout(() => { highlightedRuleIndex = null; }, 1500);
+}
+
+function setRuleAction(idx, action) {
+  if (!draftConfigData || !draftConfigData.rules[idx]) return;
+  draftConfigData.rules[idx].action = action === 'drop' ? 'drop' : 'forward';
+  updateDirtyStateUI();
+  renderRulesList();
+  lucide.createIcons();
+}
+
+function setRuleSection(idx, section) {
+  if (!draftConfigData || !draftConfigData.rules[idx]) return;
+  draftConfigData.rules[idx].section = (section === 'questions' || section === 'answers') ? section : 'any';
+  updateDirtyStateUI();
+}
+
+function toggleRuleInterface(idx, field, iface) {
+  if (!draftConfigData || !draftConfigData.rules[idx]) return;
+  const rule = draftConfigData.rules[idx];
+  let list = normalizeEndpointList(rule[field]);
+
+  if (iface === '*') {
+    list = ['*'];
+  } else {
+    list = list.filter(item => item !== '*');
+    const pos = list.indexOf(iface);
+    if (pos >= 0) {
+      list.splice(pos, 1);
+    } else {
+      list.push(iface);
+    }
+    if (list.length === 0) {
+      list = ['*'];
+    }
+  }
+
+  rule[field] = serializeEndpointValue(list);
+  updateDirtyStateUI();
+  renderRulesList();
+  lucide.createIcons();
+}
+
+function addRulePatternTag(idx, field, rawVal) {
+  if (!draftConfigData || !draftConfigData.rules[idx]) return false;
+  const parts = String(rawVal)
+    .split(',')
+    .map(s => s.trim())
+    .filter(Boolean);
+  if (parts.length === 0) return false;
+
+  const arr = draftConfigData.rules[idx][field] || [];
+  let changed = false;
+  parts.forEach(p => {
+    if (!arr.includes(p)) {
+      arr.push(p);
+      changed = true;
+    }
+  });
+  draftConfigData.rules[idx][field] = arr;
+
+  if (changed) {
+    updateDirtyStateUI();
+    renderRulesList();
+    lucide.createIcons();
+  }
+  return changed;
+}
+
+function removeRulePatternTag(idx, field, tagIdx) {
+  if (!draftConfigData || !draftConfigData.rules[idx]) return;
+  const arr = draftConfigData.rules[idx][field] || [];
+  if (tagIdx >= 0 && tagIdx < arr.length) {
+    arr.splice(tagIdx, 1);
+    updateDirtyStateUI();
+    renderRulesList();
+    lucide.createIcons();
+  }
+}
+
+function handleRuleTagInputKeydown(event, idx, field) {
+  const input = event.target;
+  if (event.key === 'Enter' || event.key === ',') {
+    event.preventDefault();
+    const val = input.value.trim();
+    if (val) {
+      addRulePatternTag(idx, field, val);
+    }
+  } else if (event.key === 'Backspace' && input.value === '') {
+    const arr = (draftConfigData && draftConfigData.rules[idx] && draftConfigData.rules[idx][field]) || [];
+    if (arr.length > 0) {
+      removeRulePatternTag(idx, field, arr.length - 1);
+    }
+  }
+}
+
+function handleRuleTagInputBlur(inputEl, idx, field) {
+  const val = inputEl.value.trim();
+  if (val) {
+    inputEl.value = '';
+    addRulePatternTag(idx, field, val);
+  }
+}
+
+/* Drag and Drop Reordering for Rule Cards */
+function onRuleDragStart(event, idx) {
+  // Avoid starting card drag when interacting with inputs or buttons
+  const tag = event.target && event.target.tagName ? event.target.tagName.toLowerCase() : '';
+  if (tag === 'input' || tag === 'select' || tag === 'button') {
+    event.preventDefault();
+    return;
+  }
+  draggedRuleIndex = idx;
+  event.currentTarget.classList.add('dragging');
+  if (event.dataTransfer) {
+    event.dataTransfer.effectAllowed = 'move';
+    event.dataTransfer.setData('text/plain', String(idx));
+  }
+}
+
+function onRuleDragOver(event, idx) {
+  event.preventDefault();
+  if (draggedRuleIndex === null || draggedRuleIndex === idx) return;
+  event.currentTarget.classList.add('drag-over');
+}
+
+function onRuleDragLeave(event) {
+  event.currentTarget.classList.remove('drag-over');
+}
+
+function onRuleDrop(event, targetIdx) {
+  event.preventDefault();
+  event.currentTarget.classList.remove('drag-over');
+  if (draggedRuleIndex === null || draggedRuleIndex === targetIdx || !draftConfigData) return;
+
+  const [moved] = draftConfigData.rules.splice(draggedRuleIndex, 1);
+  draftConfigData.rules.splice(targetIdx, 0, moved);
+  draggedRuleIndex = null;
+  highlightedRuleIndex = targetIdx;
+
+  updateDirtyStateUI();
+  renderRulesList();
+  lucide.createIcons();
+  setTimeout(() => { highlightedRuleIndex = null; }, 1500);
+}
+
+function onRuleDragEnd(event) {
+  draggedRuleIndex = null;
+  event.currentTarget.classList.remove('dragging');
+  document.querySelectorAll('.rule-card.drag-over').forEach(el => el.classList.remove('drag-over'));
+}
+
+function discardConfigChanges() {
+  if (!savedConfigData) return;
+  draftConfigData = cloneConfig(savedConfigData);
+  hideConfigFeedback();
+  renderConfigView();
+  showConfigFeedback('info', 'Reverted unsaved changes back to the active daemon configuration.');
+}
+
+async function saveAndApplyConfig() {
+  if (!draftConfigData) return;
+  const btnSave = document.getElementById('btnSaveConfig');
+  if (btnSave) btnSave.disabled = true;
+
+  try {
+    const res = await fetch('/api/config', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ config: draftConfigData }),
+    });
+    const payload = await res.json();
+    if (!res.ok || payload.status !== 'ok') {
+      throw new Error(payload.error || `HTTP ${res.status}`);
+    }
+
+    const data = payload.data;
+    savedConfigData = normalizeConfigData(data.config);
+    draftConfigData = cloneConfig(savedConfigData);
+    lastServerYaml = data.yaml || '';
+    configFilePath = data.config_path || configFilePath;
+    serverRestartRequired = Boolean(data.restart_required);
+    boundWebServer = data.bound_web_server || boundWebServer;
+
+    renderConfigView();
+    showConfigFeedback(
+      'success',
+      `Configuration saved to ${configFilePath} (backup written to ${configFilePath}.bak) and hot-reloaded in memory.`
+    );
+    refreshData();
+  } catch (err) {
+    console.error('Failed to save configuration:', err);
+    showConfigFeedback('error', `Failed to save configuration: ${err.message}`);
+    updateDirtyStateUI();
+  }
+}
+
+function showConfigFeedback(type, message) {
+  const banner = document.getElementById('configFeedbackBanner');
+  const icon = document.getElementById('configFeedbackIcon');
+  const text = document.getElementById('configFeedbackText');
+  if (!banner || !text) return;
+
+  banner.className = `config-banner ${type === 'error' ? 'error' : (type === 'success' ? 'success' : 'warning')}`;
+  if (icon) {
+    const iconName = type === 'error' ? 'alert-circle' : (type === 'success' ? 'check-circle-2' : 'info');
+    icon.setAttribute('data-lucide', iconName);
+  }
+  text.textContent = message;
+  lucide.createIcons();
+}
+
+function hideConfigFeedback() {
+  const banner = document.getElementById('configFeedbackBanner');
+  if (banner) banner.classList.add('hidden');
+}
+
+/* Raw YAML Preview & Import Modal */
+function yamlQuoteScalar(val) {
+  const s = String(val ?? '');
+  if (
+    s === '' ||
+    s === '*' ||
+    s.startsWith('*') ||
+    s.includes(':') ||
+    s.includes('#') ||
+    s.includes('[') ||
+    s.includes(']') ||
+    s.includes('{') ||
+    s.includes('}') ||
+    s.includes(',') ||
+    s.includes(' ') ||
+    s === 'true' ||
+    s === 'false' ||
+    s === 'null'
+  ) {
+    return `"${s.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
+  }
+  return s;
+}
+
+function generateClientSideYamlPreview(cfg) {
+  if (!cfg) return '';
+  const lines = [];
+  lines.push('# ==============================================================================');
+  lines.push('# mDNS Sieve Configuration File');
+  lines.push('# ==============================================================================');
+  lines.push('');
+  lines.push('# 1. Network Interfaces');
+  if (!cfg.interfaces || cfg.interfaces.length === 0) {
+    lines.push('interfaces: []');
+  } else {
+    lines.push('interfaces:');
+    cfg.interfaces.forEach(iface => {
+      lines.push(`  - ${yamlQuoteScalar(iface)}`);
+    });
+  }
+  lines.push('');
+  lines.push('# 2. Global Routing Policy');
+  lines.push(`default_action: ${yamlQuoteScalar(cfg.default_action || 'forward')}`);
+  lines.push(`rewrite_mixed_packets: ${Boolean(cfg.rewrite_mixed_packets)}`);
+  lines.push(`forward_known_answers: ${Boolean(cfg.forward_known_answers)}`);
+  lines.push('');
+
+  const ws = cfg.web_server || { enabled: true, host: '0.0.0.0', port: 8080 };
+  lines.push('# 3. Web Dashboard Server');
+  lines.push('web_server:');
+  lines.push(`  enabled: ${Boolean(ws.enabled)}`);
+  lines.push(`  host: "${ws.host || '0.0.0.0'}"`);
+  lines.push(`  port: ${ws.port || 8080}`);
+  lines.push('');
+
+  const tr = cfg.tracking || {
+    enabled: true,
+    max_records: 50000,
+    db_path: '/var/lib/mdns-sieve/responses.db',
+    flush_interval_seconds: 3600,
+    retention_days: 7,
+  };
+  lines.push('# 4. Telemetry & Message History Database');
+  lines.push('tracking:');
+  lines.push(`  enabled: ${Boolean(tr.enabled)}`);
+  lines.push(`  max_records: ${tr.max_records ?? 50000}`);
+  lines.push(`  db_path: "${tr.db_path || '/var/lib/mdns-sieve/responses.db'}"`);
+  lines.push(`  flush_interval_seconds: ${tr.flush_interval_seconds ?? 3600}`);
+  lines.push(`  retention_days: ${tr.retention_days ?? 7}`);
+  lines.push('');
+
+  lines.push('# 5. Filtering Rules (First match wins)');
+  if (!cfg.rules || cfg.rules.length === 0) {
+    lines.push('rules: []');
+  } else {
+    lines.push('rules:');
+    cfg.rules.forEach((rule, idx) => {
+      lines.push(`  # Rule #${idx + 1}`);
+      lines.push(`  - action: ${yamlQuoteScalar(rule.action || 'forward')}`);
+      if (rule.section && rule.section !== 'any') {
+        lines.push(`    section: ${yamlQuoteScalar(rule.section)}`);
+      }
+      const writeEndpoint = (key, val) => {
+        if (Array.isArray(val)) {
+          if (val.length === 1) {
+            lines.push(`    ${key}: ${yamlQuoteScalar(val[0])}`);
+          } else {
+            lines.push(`    ${key}: [${val.map(yamlQuoteScalar).join(', ')}]`);
+          }
+        } else {
+          lines.push(`    ${key}: ${yamlQuoteScalar(val || '*')}`);
+        }
+      };
+      writeEndpoint('src', rule.src);
+      writeEndpoint('dst', rule.dst);
+      if (Array.isArray(rule.services) && rule.services.length > 0) {
+        lines.push('    services:');
+        rule.services.forEach(s => lines.push(`      - ${yamlQuoteScalar(s)}`));
+      }
+      if (Array.isArray(rule.hosts) && rule.hosts.length > 0) {
+        lines.push('    hosts:');
+        rule.hosts.forEach(h => lines.push(`      - ${yamlQuoteScalar(h)}`));
+      }
+    });
+  }
+
+  return lines.join('\n') + '\n';
+}
+
+function openYamlModal() {
+  const errBanner = document.getElementById('yamlModalError');
+  if (errBanner) errBanner.classList.add('hidden');
+
+  const textarea = document.getElementById('yamlEditorTextarea');
+  if (textarea) {
+    textarea.value = (!isConfigDirty() && lastServerYaml)
+      ? lastServerYaml
+      : generateClientSideYamlPreview(draftConfigData);
+  }
+  toggleModal('yamlModal', true);
+}
+
+function copyYamlFromModal(btn) {
+  const textarea = document.getElementById('yamlEditorTextarea');
+  if (!textarea) return;
+  navigator.clipboard.writeText(textarea.value).then(() => {
+    const span = btn.querySelector('span');
+    const orig = span ? span.textContent : 'Copy YAML';
+    if (span) span.textContent = 'Copied!';
+    setTimeout(() => {
+      if (span) span.textContent = orig;
+    }, 1500);
+  });
+}
+
+function downloadYamlFile() {
+  const textarea = document.getElementById('yamlEditorTextarea');
+  const content = textarea ? textarea.value : generateClientSideYamlPreview(draftConfigData);
+  const blob = new Blob([content], { type: 'text/yaml;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = 'mdns-sieve.yaml';
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+
+async function saveYamlDirectlyFromModal() {
+  const textarea = document.getElementById('yamlEditorTextarea');
+  const errBanner = document.getElementById('yamlModalError');
+  const errText = document.getElementById('yamlModalErrorText');
+  if (!textarea) return;
+
+  try {
+    const res = await fetch('/api/config', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ yaml: textarea.value }),
+    });
+    const payload = await res.json();
+    if (!res.ok || payload.status !== 'ok') {
+      throw new Error(payload.error || `HTTP ${res.status}`);
+    }
+
+    const data = payload.data;
+    savedConfigData = normalizeConfigData(data.config);
+    draftConfigData = cloneConfig(savedConfigData);
+    lastServerYaml = data.yaml || '';
+    configFilePath = data.config_path || configFilePath;
+    serverRestartRequired = Boolean(data.restart_required);
+    boundWebServer = data.bound_web_server || boundWebServer;
+
+    toggleModal('yamlModal', false);
+    renderConfigView();
+    showConfigFeedback(
+      'success',
+      `YAML configuration validated, saved to ${configFilePath}, and hot-reloaded in memory.`
+    );
+    refreshData();
+  } catch (err) {
+    if (errBanner && errText) {
+      errText.textContent = err.message;
+      errBanner.classList.remove('hidden');
+      lucide.createIcons();
+    }
+  }
+}
+
+/* Quick "+ Rule" Action from Message History */
+async function createQuickRuleFromHistory(btnEl, event) {
+  if (event) event.stopPropagation();
+  if (!btnEl) return;
+
+  const srcIface = btnEl.getAttribute('data-src') || '*';
+  const disp = Number(btnEl.getAttribute('data-disp') || 0);
+  const section = btnEl.getAttribute('data-section') || 'any';
+  const rawName = (btnEl.getAttribute('data-name') || '').trim().replace(/\.$/, '');
+  const rrType = Number(btnEl.getAttribute('data-rrtype') || 0);
+
+  if (!configInitialized) {
+    configInitialized = true;
+    await Promise.all([loadConfigFromServer(), loadSystemInterfaces()]);
+  }
+
+  // Toggle opposite action of current item disposition (2 = Dropped -> forward, otherwise drop)
+  const targetAction = disp === 2 ? 'forward' : 'drop';
+  const isAddressRecord = rrType === 1 || rrType === 28; // A or AAAA
+
+  const draftRule = {
+    action: targetAction,
+    section: (section === 'questions' || section === 'answers') ? section : 'any',
+    src: srcIface || '*',
+    dst: '*',
+    services: !isAddressRecord && rawName ? [rawName] : [],
+    hosts: isAddressRecord && rawName ? [rawName] : [],
+  };
+
+  switchMainView('config');
+  addConfigRule(draftRule, true);
+  showConfigFeedback(
+    'info',
+    `Drafted a new ${targetAction.toUpperCase()} rule #1 for "${rawName || '*'}" from ${srcIface}. Click "Save & Apply" to activate.`
+  );
+
+  setTimeout(() => {
+    const card = document.getElementById('configRuleCard_0');
+    if (card) {
+      card.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    }
+  }, 100);
+}
+

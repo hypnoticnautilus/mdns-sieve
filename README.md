@@ -111,7 +111,15 @@ Displays real-time KPI counters and trend lines showing total, forwarded, partia
 Provides a detailed, paginated log of received mDNS queries and responses:
 * **Granular Dispositions**: Color-coded indicator dots (Forwarded, Partially Forwarded, Dropped) at both the packet level and individual question/resource-record level, with tooltips showing ingress and routed destination interfaces.
 * **Expandable Packet Inspection**: Expand any message to inspect its individual questions and resource records (`Answer`, `Authority`, `Additional`), including decoded record data (`A`, `AAAA`, `PTR`, `SRV`, `TXT`, `CNAME`, `NS`, `NSEC`), TTLs, and copy-to-clipboard actions.
+* **One-Click Rule Creation (`+ Rule`)**: Draft a filtering rule directly from any question or resource record row in Message History, pre-populated with its source interface, record section, and service/host name.
 * **Multi-Facet Filtering**: Filter messages by query name, record name or data, source IP, ingress interface, destination interface, disposition, packet type, and time range.
+
+#### Visual Configuration Manager & Live Hot-Reload
+Manage the entire `mdns-sieve` configuration directly from the **Configuration** tab in the Web GUI:
+* **System Interface Discovery**: Auto-detects host network interfaces from `/sys/class/net` with live `UP`/`DOWN` status badges, alongside support for custom VLAN/bridge interface names.
+* **Visual Filtering Rule Builder**: Create, edit, duplicate, and reorder rules via drag-and-drop or arrow controls with tag/chip editors for `services` and `hosts` wildcard patterns.
+* **Raw YAML Preview & Import**: Inspect generated commented YAML, download a copy, or paste/edit raw YAML directly.
+* **Atomic Persistence & Hot-Reload**: Saving writes an atomic `.bak` backup of the previous configuration file and hot-reloads interfaces, global policies, filtering rules, and database tracking in memory without restarting the daemon.
 
 #### Telemetry & SQLite Persistence
 When tracking is enabled, the daemon persists traffic metrics to an SQLite database (default: `/var/lib/mdns-sieve/responses.db`).

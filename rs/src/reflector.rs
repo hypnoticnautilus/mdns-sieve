@@ -14,7 +14,7 @@ const MDNS_ADDR: Ipv4Addr = Ipv4Addr::new(224, 0, 0, 251);
 const MDNS_PORT: u16 = 5353;
 
 pub struct Reflector {
-    config: Arc<AppConfig>,
+    config_rx: tokio::sync::watch::Receiver<Arc<AppConfig>>,
     manager: Arc<Mutex<CommandServerManager>>,
 }
 
@@ -28,52 +28,110 @@ fn compute_item_disposition(fwd: &[String], drop: &[String]) -> Disposition {
     }
 }
 
+fn reconcile_sockets(
+    desired_interfaces: &[String],
+    sockets: &mut HashMap<String, (Arc<UdpSocket>, tokio::sync::watch::Sender<bool>)>,
+    tx: &tokio::sync::mpsc::Sender<(String, std::net::SocketAddr, Vec<u8>)>,
+) {
+    let desired_set: HashSet<&String> = desired_interfaces.iter().collect();
+
+    // Stop and remove sockets for interfaces no longer configured
+    sockets.retain(|iface, (_, stop_tx)| {
+        if desired_set.contains(iface) {
+            true
+        } else {
+            let _ = stop_tx.send(true);
+            println!("Unbound mDNS listener from removed interface {}", iface);
+            false
+        }
+    });
+
+    // Bind and spawn listeners for newly added interfaces
+    for iface in desired_interfaces {
+        if sockets.contains_key(iface) {
+            continue;
+        }
+        match setup_socket(iface) {
+            Ok(sock) => match UdpSocket::from_std(sock.into()) {
+                Ok(async_sock) => {
+                    let sock_arc = Arc::new(async_sock);
+                    let (stop_tx, mut stop_rx) = tokio::sync::watch::channel(false);
+                    let sock_clone = sock_arc.clone();
+                    let tx_clone = tx.clone();
+                    let iface_clone = iface.clone();
+
+                    tokio::spawn(async move {
+                        let mut buf = [0u8; 65535];
+                        loop {
+                            tokio::select! {
+                                _ = stop_rx.changed() => {
+                                    break;
+                                }
+                                res = sock_clone.recv_from(&mut buf) => {
+                                    if let Ok((len, addr)) = res {
+                                        let _ = tx_clone.send((iface_clone.clone(), addr, buf[..len].to_vec())).await;
+                                    }
+                                }
+                            }
+                        }
+                    });
+
+                    sockets.insert(iface.clone(), (sock_arc, stop_tx));
+                    println!("Successfully bound and joined multicast on interface {}", iface);
+                }
+                Err(e) => eprintln!("Failed to create async socket for {}: {}", iface, e),
+            },
+            Err(e) => eprintln!("Failed to setup socket for {}: {}", iface, e),
+        }
+    }
+}
+
 impl Reflector {
-    pub fn new(config: Arc<AppConfig>, manager: Arc<Mutex<CommandServerManager>>) -> Self {
-        Self { config, manager }
+    pub fn new(
+        config_rx: tokio::sync::watch::Receiver<Arc<AppConfig>>,
+        manager: Arc<Mutex<CommandServerManager>>,
+    ) -> Self {
+        Self { config_rx, manager }
     }
 
-    pub async fn run(&self) {
-        let mut sockets = HashMap::new();
-
-        for iface in &self.config.interfaces {
-            match setup_socket(iface) {
-                Ok(sock) => {
-                    match UdpSocket::from_std(sock.into()) {
-                        Ok(async_sock) => {
-                            sockets.insert(iface.clone(), Arc::new(async_sock));
-                            println!("Successfully bound and joined multicast on interface {}", iface);
-                        }
-                        Err(e) => eprintln!("Failed to create async socket for {}: {}", iface, e),
-                    }
-                }
-                Err(e) => eprintln!("Failed to setup socket for {}: {}", iface, e),
-            }
-        }
-
-        if sockets.is_empty() {
-            eprintln!("No interfaces successfully bound. Exiting reflector loop.");
-            return;
-        }
-
+    pub async fn run(mut self) {
+        let mut active_config = self.config_rx.borrow_and_update().clone();
+        let mut sockets: HashMap<String, (Arc<UdpSocket>, tokio::sync::watch::Sender<bool>)> = HashMap::new();
         let (tx, mut rx) = tokio::sync::mpsc::channel::<(String, std::net::SocketAddr, Vec<u8>)>(1000);
 
-        for (iface, sock) in &sockets {
-            let sock_clone = sock.clone();
-            let tx_clone = tx.clone();
-            let iface_clone = iface.clone();
+        reconcile_sockets(&active_config.interfaces, &mut sockets, &tx);
 
-            tokio::spawn(async move {
-                let mut buf = [0u8; 65535];
-                loop {
-                    if let Ok((len, addr)) = sock_clone.recv_from(&mut buf).await {
-                        let _ = tx_clone.send((iface_clone.clone(), addr, buf[..len].to_vec())).await;
-                    }
-                }
-            });
+        if sockets.is_empty() {
+            eprintln!("Warning: No interfaces currently bound. Waiting for configuration updates...");
         }
 
-        while let Some((src_iface, src_addr, data)) = rx.recv().await {
+        loop {
+            let (src_iface, src_addr, data) = tokio::select! {
+                changed = self.config_rx.changed() => {
+                    if changed.is_err() {
+                        break;
+                    }
+                    active_config = self.config_rx.borrow_and_update().clone();
+                    reconcile_sockets(&active_config.interfaces, &mut sockets, &tx);
+                    println!(
+                        "Hot-reloaded configuration in Reflector (interfaces: {:?}, rules: {})",
+                        active_config.interfaces,
+                        active_config.rules.len()
+                    );
+                    continue;
+                }
+                maybe_pkt = rx.recv() => {
+                    match maybe_pkt {
+                        Some(pkt) => pkt,
+                        None => break,
+                    }
+                }
+            };
+
+            if !sockets.contains_key(&src_iface) {
+                continue;
+            }
+
             let src_ip = match src_addr {
                 std::net::SocketAddr::V4(v4) => v4.ip().to_string(),
                 _ => continue,
@@ -111,13 +169,13 @@ impl Reflector {
                 let mut auth_routing: Vec<(Vec<String>, Vec<String>)> = vec![(Vec::new(), Vec::new()); packet.authorities.len()];
                 let mut add_routing: Vec<(Vec<String>, Vec<String>)> = vec![(Vec::new(), Vec::new()); packet.additionals.len()];
 
-                for (dst_iface, dst_sock) in &sockets {
+                for (dst_iface, (dst_sock, _)) in &sockets {
                     if dst_iface == &src_iface {
                         continue;
                     }
 
-                    if !self.config.rewrite_mixed_packets {
-                        let should_fwd = self.config.should_forward(&src_iface, dst_iface, &question_names, Some(&answer_names));
+                    if !active_config.rewrite_mixed_packets {
+                        let should_fwd = active_config.should_forward(&src_iface, dst_iface, &question_names, Some(&answer_names));
                         if should_fwd {
                             let _ = dst_sock.send_to(&data, (MDNS_ADDR, MDNS_PORT)).await;
                             for entry in q_routing.iter_mut()
@@ -150,7 +208,7 @@ impl Reflector {
                         let mut add_kept = vec![false; packet.additionals.len()];
 
                         for (idx, q) in packet.questions.iter().enumerate() {
-                            if self.config.should_forward_question(&src_iface, dst_iface, &q.name) {
+                            if active_config.should_forward_question(&src_iface, dst_iface, &q.name) {
                                 rewritten_packet.questions.push(q.clone());
                                 q_kept[idx] = true;
                                 kept_count += 1;
@@ -163,7 +221,7 @@ impl Reflector {
                                               out: &mut Vec<DNSResourceRecord>,
                                               kept_flags: &mut Vec<bool>| {
                             for (idx, rr) in rrs.iter().enumerate() {
-                                if self.config.should_forward_record(&src_iface, dst_iface, &rr.name, rr.target_name.as_deref(), is_resp) {
+                                if active_config.should_forward_record(&src_iface, dst_iface, &rr.name, rr.target_name.as_deref(), is_resp) {
                                     out.push(rr.clone());
                                     kept_flags[idx] = true;
                                     kept_count += 1;

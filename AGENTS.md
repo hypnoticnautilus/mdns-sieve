@@ -45,3 +45,5 @@ Use the local deployment script to push updates to target hosts (e.g., Alpine on
 - `/api/stats`: Returns aggregated global packet counts (`total`, `forwarded`, `partially_forwarded`, `dropped`), configured interfaces, daemon version, and commit information.
 - `/api/history`: Returns paginated message history with per-question and per-resource-record items, supporting filters for query name, response name/rdata, source IP, ingress interface, destination interface, disposition, packet type, and time range.
 - `/api/clear` (POST): Resets statistics. Passing a JSON payload `{"clear_tracking": true}` will also purge all message history database tables and active memory buffers.
+- `/api/config` (GET / POST): Reads or updates the active daemon configuration (`AppConfigData` or raw YAML), writes an atomic `.bak` backup before saving to the YAML file, and hot-reloads the `Reflector` and `CommandServerManager` in memory via a `tokio::sync::watch` channel.
+- `/api/interfaces` (GET): Scans `/sys/class/net` for system network interfaces and operational states (`up`/`down`) alongside currently configured interfaces.
