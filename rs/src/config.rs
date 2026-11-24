@@ -302,6 +302,94 @@ fn is_valid_interface_name(name: &str) -> bool {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+pub struct SsdpRuleConfig {
+    pub action: String,
+    #[serde(default)]
+    pub from: Option<Vec<String>>,
+    #[serde(default)]
+    pub to: Option<Vec<String>>,
+    #[serde(default)]
+    pub method: Option<String>,
+    #[serde(default)]
+    pub st: Option<String>,
+    #[serde(default)]
+    pub usn: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct SsdpRule {
+    pub is_allow: bool,
+    pub from: Option<Vec<String>>,
+    pub to: Option<Vec<String>>,
+    pub method: Option<String>,
+    pub st_regex: Option<Regex>,
+    pub usn_regex: Option<Regex>,
+}
+
+impl SsdpRule {
+    pub fn from_config(cfg: &SsdpRuleConfig) -> Self {
+        let is_allow = matches!(cfg.action.trim().to_ascii_lowercase().as_str(), "allow" | "forward");
+        let compile_glob = |p: &str| -> Option<Regex> {
+            let escaped = regex::escape(p).replace(r"\*", ".*").replace(r"\?", ".");
+            Regex::new(&format!("^{}$", escaped)).ok()
+        };
+        let st_regex = cfg.st.as_deref().and_then(compile_glob);
+        let usn_regex = cfg.usn.as_deref().and_then(compile_glob);
+        Self {
+            is_allow,
+            from: cfg.from.clone(),
+            to: cfg.to.clone(),
+            method: cfg.method.as_ref().map(|m| m.trim().to_ascii_uppercase()),
+            st_regex,
+            usn_regex,
+        }
+    }
+
+    pub fn matches(&self, pkt: &crate::ssdp::SsdpPacket, src_iface: &str, dst_iface: &str) -> bool {
+        if let Some(ref from_ifaces) = self.from {
+            if !from_ifaces.iter().any(|i| i == src_iface || i == "*") {
+                return false;
+            }
+        }
+        if let Some(ref to_ifaces) = self.to {
+            if !to_ifaces.iter().any(|i| i == dst_iface || i == "*") {
+                return false;
+            }
+        }
+        if let Some(ref method) = self.method {
+            if method != "*" && method != pkt.method.as_str() {
+                return false;
+            }
+        }
+        if let Some(ref re) = self.st_regex {
+            match pkt.service_type() {
+                Some(st) if re.is_match(st) => {}
+                _ => return false,
+            }
+        }
+        if let Some(ref re) = self.usn_regex {
+            match pkt.usn.as_deref() {
+                Some(usn) if re.is_match(usn) => {}
+                _ => return false,
+            }
+        }
+        true
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, Default)]
+pub struct SsdpConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default)]
+    pub interfaces: Vec<String>,
+    #[serde(default)]
+    pub default_action: Option<String>,
+    #[serde(default)]
+    pub rules: Vec<SsdpRuleConfig>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 pub struct AppConfigData {
     #[serde(default)]
     pub interfaces: Vec<String>,
@@ -314,6 +402,8 @@ pub struct AppConfigData {
     pub tracking: Option<TrackingConfig>,
     #[serde(default)]
     pub rules: Vec<FilterRuleConfig>,
+    #[serde(default)]
+    pub ssdp: Option<SsdpConfig>,
 }
 
 impl AppConfigData {
@@ -490,6 +580,14 @@ impl AppConfigData {
             .map_err(|e| e.to_string())?;
         out.push_str(&rules_yaml);
 
+        if let Some(ref ssdp) = normalized.ssdp {
+            out.push('\n');
+            out.push_str("# Configuration for SSDP (239.255.255.250:1900) reflection across interfaces.\n");
+            let ssdp_yaml = serde_yaml::to_string(&serde_json::json!({ "ssdp": ssdp }))
+                .map_err(|e| e.to_string())?;
+            out.push_str(&ssdp_yaml);
+        }
+
         Ok(out)
     }
 
@@ -566,21 +664,57 @@ pub struct AppConfig {
     pub web_server: Option<WebServerConfig>,
     pub tracking: Option<TrackingConfig>,
     pub rules: Vec<FilterRule>,
+    pub ssdp_enabled: bool,
+    pub ssdp_interfaces: Vec<String>,
+    pub ssdp_default_action_is_forward: bool,
+    pub ssdp_rules: Vec<SsdpRule>,
 }
 
 impl AppConfig {
     pub fn from_data(cfg_data: &AppConfigData) -> Self {
         let rules = cfg_data.rules.iter().map(FilterRule::from_config).collect();
+        let default_action_is_forward = cfg_data.default_action == "forward";
+
+        let (ssdp_enabled, ssdp_interfaces, ssdp_default_action_is_forward, ssdp_rules) =
+            if let Some(ref ssdp) = cfg_data.ssdp {
+                let ssdp_default = ssdp
+                    .default_action
+                    .as_deref()
+                    .map(|a| matches!(a.trim().to_ascii_lowercase().as_str(), "allow" | "forward"))
+                    .unwrap_or(default_action_is_forward);
+                let ssdp_rules = ssdp.rules.iter().map(SsdpRule::from_config).collect();
+                (ssdp.enabled, ssdp.interfaces.clone(), ssdp_default, ssdp_rules)
+            } else {
+                (false, Vec::new(), false, Vec::new())
+            };
 
         Self {
             interfaces: cfg_data.interfaces.clone(),
-            default_action_is_forward: cfg_data.default_action == "forward",
+            default_action_is_forward,
             rewrite_mixed_packets: cfg_data.rewrite_mixed_packets,
             forward_known_answers: cfg_data.forward_known_answers,
             web_server: cfg_data.web_server.clone(),
             tracking: cfg_data.tracking.clone(),
             rules,
+            ssdp_enabled,
+            ssdp_interfaces,
+            ssdp_default_action_is_forward,
+            ssdp_rules,
         }
+    }
+
+    pub fn should_forward_ssdp(
+        &self,
+        pkt: &crate::ssdp::SsdpPacket,
+        src_iface: &str,
+        dst_iface: &str,
+    ) -> bool {
+        for rule in &self.ssdp_rules {
+            if rule.matches(pkt, src_iface, dst_iface) {
+                return rule.is_allow;
+            }
+        }
+        self.ssdp_default_action_is_forward
     }
 
     pub fn load_from_file_with_data<P: AsRef<Path>>(path: P) -> Result<(Self, AppConfigData), Box<dyn std::error::Error>> {
@@ -711,6 +845,7 @@ mod tests {
                 dst: StringOrList::String("*".to_string()),
                 section: RuleSection::Answers,
             }],
+            ssdp: None,
         }
     }
 

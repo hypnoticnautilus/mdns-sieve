@@ -1,4 +1,5 @@
 mod mdns;
+mod ssdp;
 mod config;
 mod database;
 mod server;
@@ -17,6 +18,8 @@ use tokio::signal;
 struct Args {
     #[arg(short, long, default_value = "/etc/mdns-sieve.yaml")]
     config: String,
+    #[arg(short, long, default_value_t = false)]
+    verbose: bool,
 }
 
 #[tokio::main]
@@ -46,10 +49,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
-    let reflector = Reflector::new(config_rx, manager.clone());
+    let reflector = Reflector::new(config_rx.clone(), manager.clone());
     
     let _reflector_handle = tokio::spawn(async move {
         reflector.run().await;
+    });
+
+    let mut ssdp_reflector = crate::ssdp::SsdpReflector::new(config_rx, manager.clone(), args.verbose);
+    let _ssdp_handle = tokio::spawn(async move {
+        ssdp_reflector.run().await;
     });
 
     // Handle signals for graceful shutdown

@@ -126,6 +126,7 @@ impl CommandServerManager {
                 web_server: self.config_server.clone(),
                 tracking: self.tracking_config.clone(),
                 rules: Vec::new(),
+                ssdp: None,
             }
         }
     }
@@ -313,6 +314,7 @@ pub fn build_router(manager: Arc<Mutex<CommandServerManager>>) -> Router {
         .route("/favicon.svg", get(serve_favicon))
         .route("/api/stats", get(api_stats))
         .route("/api/history", get(api_history))
+        .route("/api/ssdp/history", get(api_ssdp_history))
         .route("/api/clear", post(api_clear))
         .route("/api/config", get(api_get_config).post(api_save_config))
         .route("/api/interfaces", get(api_get_interfaces))
@@ -351,6 +353,36 @@ async fn serve_style_css() -> impl IntoResponse {
 
 async fn serve_favicon() -> impl IntoResponse {
     ([(header::CONTENT_TYPE, "image/svg+xml")], include_str!("../static/favicon.svg"))
+}
+
+#[derive(serde::Deserialize)]
+struct SsdpHistoryQuery {
+    page: Option<usize>,
+    limit: Option<usize>,
+}
+
+async fn api_ssdp_history(
+    State(mgr): State<Arc<Mutex<CommandServerManager>>>,
+    Query(params): Query<SsdpHistoryQuery>,
+) -> impl IntoResponse {
+    let page = params.page.unwrap_or(1).max(1);
+    let limit = params.limit.unwrap_or(50).clamp(1, 500);
+    let mgr_guard = mgr.lock().await;
+    if let Some(ref db) = mgr_guard.db_manager {
+        let (items, total) = db.get_ssdp_history(page, limit);
+        return Json(serde_json::json!({
+            "items": items,
+            "total": total,
+            "page": page,
+            "limit": limit
+        })).into_response();
+    }
+    Json(serde_json::json!({
+        "items": [],
+        "total": 0,
+        "page": page,
+        "limit": limit
+    })).into_response()
 }
 
 async fn api_stats(State(manager): State<Arc<Mutex<CommandServerManager>>>) -> Json<Value> {
@@ -581,6 +613,7 @@ mod tests {
                 max_history_records: None,
             }),
             rules: vec![],
+            ssdp: None,
         };
 
         initial_data.save_to_file(&cfg_path).unwrap();

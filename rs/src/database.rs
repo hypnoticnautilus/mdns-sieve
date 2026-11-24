@@ -74,6 +74,21 @@ pub struct MessageRecord {
     pub items: Vec<MessageItemRecord>,
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub struct SsdpHistoryItem {
+    pub id: i64,
+    pub timestamp: f64,
+    pub src_ip: String,
+    pub src_interface: String,
+    pub method: String,
+    pub st: Option<String>,
+    pub usn: Option<String>,
+    pub location: Option<String>,
+    pub disposition: i32,
+    pub forwarded_interfaces: Vec<String>,
+    pub dropped_interfaces: Vec<String>,
+}
+
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct HistoryFilterParams {
     pub page: Option<usize>,
@@ -162,6 +177,22 @@ impl DatabaseManager {
                 CREATE INDEX IF NOT EXISTS idx_messages_packet_type ON messages (packet_type);
                 CREATE INDEX IF NOT EXISTS idx_message_items_message_id ON message_items (message_id);
                 CREATE INDEX IF NOT EXISTS idx_message_items_section_name ON message_items (section, name);
+
+                CREATE TABLE IF NOT EXISTS ssdp_messages (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    timestamp REAL NOT NULL,
+                    src_ip TEXT NOT NULL,
+                    src_interface TEXT NOT NULL,
+                    method TEXT NOT NULL,
+                    st TEXT,
+                    usn TEXT,
+                    location TEXT,
+                    disposition INTEGER NOT NULL,
+                    forwarded_interfaces TEXT NOT NULL,
+                    dropped_interfaces TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_ssdp_messages_timestamp_id ON ssdp_messages (timestamp DESC, id DESC);
+                CREATE INDEX IF NOT EXISTS idx_ssdp_messages_method ON ssdp_messages (method);
             ";
             let _ = conn.execute_batch(schema);
         }
@@ -455,7 +486,75 @@ impl DatabaseManager {
         if let Ok(conn) = self.get_connection() {
             let _ = conn.execute("DELETE FROM message_items", []);
             let _ = conn.execute("DELETE FROM messages", []);
+            let _ = conn.execute("DELETE FROM ssdp_messages", []);
         }
+    }
+
+    pub fn record_ssdp_message(
+        &self,
+        src_ip: &str,
+        src_interface: &str,
+        method: &str,
+        st: Option<&str>,
+        usn: Option<&str>,
+        location: Option<&str>,
+        disposition: u8,
+        forwarded_interfaces: &[String],
+        dropped_interfaces: &[String],
+    ) {
+        if let Ok(conn) = self.get_connection() {
+            let ts = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs_f64();
+            let fwd_json = serde_json::to_string(forwarded_interfaces).unwrap_or_else(|_| "[]".to_string());
+            let drp_json = serde_json::to_string(dropped_interfaces).unwrap_or_else(|_| "[]".to_string());
+            let _ = conn.execute(
+                "INSERT INTO ssdp_messages (timestamp, src_ip, src_interface, method, st, usn, location, disposition, forwarded_interfaces, dropped_interfaces)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+                params![ts, src_ip, src_interface, method, st, usn, location, disposition as i32, fwd_json, drp_json],
+            );
+        }
+    }
+
+    pub fn get_ssdp_history(&self, page: usize, limit: usize) -> (Vec<SsdpHistoryItem>, usize) {
+        let mut items = Vec::new();
+        let mut total = 0usize;
+        if let Ok(conn) = self.get_connection() {
+            if let Ok(cnt) = conn.query_row("SELECT COUNT(*) FROM ssdp_messages", [], |row| row.get::<_, i64>(0)) {
+                total = cnt.max(0) as usize;
+            }
+            let offset = page.saturating_sub(1) * limit;
+            if let Ok(mut stmt) = conn.prepare(
+                "SELECT id, timestamp, src_ip, src_interface, method, st, usn, location, disposition, forwarded_interfaces, dropped_interfaces
+                 FROM ssdp_messages
+                 ORDER BY timestamp DESC, id DESC
+                 LIMIT ?1 OFFSET ?2",
+            ) {
+                if let Ok(rows) = stmt.query_map(params![limit as i64, offset as i64], |row| {
+                    let fwd_str: String = row.get(9)?;
+                    let drp_str: String = row.get(10)?;
+                    Ok(SsdpHistoryItem {
+                        id: row.get(0)?,
+                        timestamp: row.get(1)?,
+                        src_ip: row.get(2)?,
+                        src_interface: row.get(3)?,
+                        method: row.get(4)?,
+                        st: row.get(5)?,
+                        usn: row.get(6)?,
+                        location: row.get(7)?,
+                        disposition: row.get(8)?,
+                        forwarded_interfaces: serde_json::from_str(&fwd_str).unwrap_or_default(),
+                        dropped_interfaces: serde_json::from_str(&drp_str).unwrap_or_default(),
+                    })
+                }) {
+                    for r in rows.flatten() {
+                        items.push(r);
+                    }
+                }
+            }
+        }
+        (items, total)
     }
 }
 

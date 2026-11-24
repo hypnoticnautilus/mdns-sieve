@@ -659,26 +659,67 @@ function switchMainView(view) {
   currentMainView = view;
   const btnLive = document.getElementById('viewBtnLive');
   const btnHistory = document.getElementById('viewBtnHistory');
+  const btnSsdp = document.getElementById('viewBtnSsdp');
   const btnConfig = document.getElementById('viewBtnConfig');
   const viewLive = document.getElementById('liveDashboardView');
   const viewHistory = document.getElementById('messageHistoryView');
+  const viewSsdp = document.getElementById('ssdpHistoryView');
   const viewConfig = document.getElementById('configurationView');
 
   btnLive.classList.toggle('active', view === 'live');
   btnHistory.classList.toggle('active', view === 'history');
+  if (btnSsdp) btnSsdp.classList.toggle('active', view === 'ssdp');
   if (btnConfig) btnConfig.classList.toggle('active', view === 'config');
 
   viewLive.classList.toggle('hidden', view !== 'live');
   viewHistory.classList.toggle('hidden', view !== 'history');
+  if (viewSsdp) viewSsdp.classList.toggle('hidden', view !== 'ssdp');
   if (viewConfig) viewConfig.classList.toggle('hidden', view !== 'config');
 
   if (view === 'history') {
     loadHistoryData(currentHistoryPage);
+  } else if (view === 'ssdp') {
+    loadSsdpHistory(1);
   } else if (view === 'config') {
     ensureConfigViewInitialized();
   }
 
   lucide.createIcons();
+}
+
+async function loadSsdpHistory(page = 1) {
+  const tbody = document.getElementById('ssdpHistoryTableBody');
+  const totalBadge = document.getElementById('ssdpTotalCount');
+  if (!tbody) return;
+  try {
+    const res = await fetch(`/api/ssdp/history?page=${page}&limit=50`);
+    const data = await res.json();
+    if (totalBadge) totalBadge.textContent = `${data.total || 0} records`;
+    const items = data.items || [];
+    if (items.length === 0) {
+      tbody.innerHTML = '<tr><td colspan="9" class="text-center">No SSDP messages recorded yet.</td></tr>';
+      return;
+    }
+    const dispLabel = (d) => d === 0 ? '<span class="badge badge-success">Forwarded</span>'
+      : d === 1 ? '<span class="badge badge-warning">Partial</span>'
+      : '<span class="badge badge-danger">Dropped</span>';
+    tbody.innerHTML = items.map(item => {
+      const ts = new Date(item.timestamp * 1000).toLocaleTimeString();
+      return `<tr>
+        <td>${ts}</td>
+        <td><code>${item.src_ip}</code></td>
+        <td>${item.src_interface}</td>
+        <td><strong>${item.method}</strong></td>
+        <td>${item.st || '-'}</td>
+        <td>${item.usn || '-'}</td>
+        <td>${dispLabel(item.disposition)}</td>
+        <td>${(item.forwarded_interfaces || []).join(', ') || '-'}</td>
+        <td>${(item.dropped_interfaces || []).join(', ') || '-'}</td>
+      </tr>`;
+    }).join('');
+  } catch (e) {
+    tbody.innerHTML = `<tr><td colspan="9" class="text-center">Failed to load SSDP history: ${e}</td></tr>`;
+  }
 }
 
 /* ==========================================================================
@@ -1103,6 +1144,12 @@ function defaultConfigTemplate() {
       retention_days: 7,
     },
     rules: [],
+    ssdp: {
+      enabled: false,
+      interfaces: [],
+      default_action: 'forward',
+      rules: [],
+    },
   };
 }
 
@@ -1145,6 +1192,25 @@ function normalizeConfigData(raw) {
     ? raw.rules.map(normalizeRuleItem)
     : [];
 
+  const rawSsdp = raw.ssdp || {};
+  const ssdp = {
+    enabled: Boolean(rawSsdp.enabled),
+    interfaces: Array.isArray(rawSsdp.interfaces)
+      ? rawSsdp.interfaces.map(s => String(s).trim()).filter(Boolean)
+      : [],
+    default_action: String(rawSsdp.default_action || 'forward').toLowerCase() === 'drop' ? 'drop' : 'forward',
+    rules: Array.isArray(rawSsdp.rules)
+      ? rawSsdp.rules.map(r => ({
+          action: String((r && r.action) || 'allow').toLowerCase() === 'deny' ? 'deny' : 'allow',
+          method: r && r.method ? String(r.method).trim().toUpperCase() : null,
+          from: Array.isArray(r && r.from) ? r.from.map(s => String(s).trim()).filter(Boolean) : null,
+          to: Array.isArray(r && r.to) ? r.to.map(s => String(s).trim()).filter(Boolean) : null,
+          st: r && r.st ? String(r.st).trim() : null,
+          usn: r && r.usn ? String(r.usn).trim() : null,
+        }))
+      : [],
+  };
+
   return {
     interfaces,
     default_action,
@@ -1153,6 +1219,7 @@ function normalizeConfigData(raw) {
     web_server,
     tracking,
     rules,
+    ssdp,
   };
 }
 
@@ -1309,7 +1376,156 @@ function renderConfigView() {
   renderGlobalPolicySection();
   renderRulesList();
   renderTrackingAndWebSection();
+  renderSsdpConfigSection();
   lucide.createIcons();
+}
+
+function renderSsdpConfigSection() {
+  if (!draftConfigData) return;
+  const ssdp = draftConfigData.ssdp || { enabled: false, interfaces: [], default_action: 'forward', rules: [] };
+  const enabledEl = document.getElementById('cfgSsdpEnabled');
+  const defaultActionEl = document.getElementById('cfgSsdpDefaultAction');
+  const ifacesEl = document.getElementById('cfgSsdpInterfacesContainer');
+  const rulesEl = document.getElementById('cfgSsdpRulesContainer');
+
+  if (enabledEl) enabledEl.checked = Boolean(ssdp.enabled);
+  if (defaultActionEl) defaultActionEl.value = ssdp.default_action || 'forward';
+
+  if (ifacesEl) {
+    const activeSet = new Set(ssdp.interfaces || []);
+    const allIfaces = allKnownInterfaceNames();
+    if (allIfaces.length === 0) {
+      ifacesEl.innerHTML = '<span class="help-text">No interfaces detected.</span>';
+    } else {
+      ifacesEl.innerHTML = allIfaces.map(name => {
+        const isSelected = activeSet.has(name);
+        const iconName = isSelected ? 'check-square' : 'square';
+        return `
+          <div class="iface-chip ${isSelected ? 'selected' : ''}" onclick="toggleSsdpInterface('${escapeHtml(name)}')">
+            <i data-lucide="${iconName}"></i>
+            <span>${escapeHtml(name)}</span>
+          </div>
+        `;
+      }).join('');
+    }
+  }
+
+  if (rulesEl) {
+    const rules = ssdp.rules || [];
+    if (rules.length === 0) {
+      rulesEl.innerHTML = '<p class="help-text">No SSDP rules configured. The SSDP default action applies to all packets.</p>';
+    } else {
+      rulesEl.innerHTML = rules.map((r, idx) => `
+        <div class="rule-card" style="margin-bottom: 8px; padding: 10px;">
+          <div class="config-form-grid">
+            <div class="form-group">
+              <label>Action</label>
+              <select class="config-input" onchange="updateSsdpRule(${idx}, 'action', this.value)">
+                <option value="allow" ${r.action === 'allow' ? 'selected' : ''}>Allow</option>
+                <option value="deny" ${r.action === 'deny' ? 'selected' : ''}>Deny</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label>Method</label>
+              <select class="config-input" onchange="updateSsdpRule(${idx}, 'method', this.value)">
+                <option value="" ${!r.method ? 'selected' : ''}>Any (*)</option>
+                <option value="M-SEARCH" ${r.method === 'M-SEARCH' ? 'selected' : ''}>M-SEARCH</option>
+                <option value="NOTIFY" ${r.method === 'NOTIFY' ? 'selected' : ''}>NOTIFY</option>
+                <option value="RESPONSE" ${r.method === 'RESPONSE' ? 'selected' : ''}>RESPONSE (200 OK)</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label>From Interfaces (comma-sep)</label>
+              <input type="text" class="config-input" placeholder="* or eth0,wlan0" value="${escapeHtml((r.from || []).join(','))}" onchange="updateSsdpRule(${idx}, 'from', this.value)">
+            </div>
+            <div class="form-group">
+              <label>To Interfaces (comma-sep)</label>
+              <input type="text" class="config-input" placeholder="* or eth0,wlan0" value="${escapeHtml((r.to || []).join(','))}" onchange="updateSsdpRule(${idx}, 'to', this.value)">
+            </div>
+            <div class="form-group">
+              <label>ST / NT Pattern</label>
+              <input type="text" class="config-input" placeholder="e.g. urn:schemas-upnp-org:*" value="${escapeHtml(r.st || '')}" onchange="updateSsdpRule(${idx}, 'st', this.value)">
+            </div>
+            <div class="form-group">
+              <label>USN Pattern</label>
+              <input type="text" class="config-input" placeholder="e.g. uuid:*" value="${escapeHtml(r.usn || '')}" onchange="updateSsdpRule(${idx}, 'usn', this.value)">
+            </div>
+          </div>
+          <div style="margin-top: 8px; text-align: right;">
+            <button type="button" class="btn btn-secondary" onclick="deleteSsdpRule(${idx})">
+              <i data-lucide="trash-2"></i>
+              <span>Delete Rule</span>
+            </button>
+          </div>
+        </div>
+      `).join('');
+    }
+  }
+}
+
+function onSsdpConfigChange() {
+  if (!draftConfigData) return;
+  if (!draftConfigData.ssdp) draftConfigData.ssdp = { enabled: false, interfaces: [], default_action: 'forward', rules: [] };
+  const enabledEl = document.getElementById('cfgSsdpEnabled');
+  const defaultActionEl = document.getElementById('cfgSsdpDefaultAction');
+  if (enabledEl) draftConfigData.ssdp.enabled = enabledEl.checked;
+  if (defaultActionEl) draftConfigData.ssdp.default_action = defaultActionEl.value;
+  updateDirtyStateUI();
+}
+
+function toggleSsdpInterface(name) {
+  if (!draftConfigData) return;
+  if (!draftConfigData.ssdp) draftConfigData.ssdp = { enabled: false, interfaces: [], default_action: 'forward', rules: [] };
+  const list = draftConfigData.ssdp.interfaces || [];
+  const idx = list.indexOf(name);
+  if (idx >= 0) {
+    list.splice(idx, 1);
+  } else {
+    list.push(name);
+  }
+  draftConfigData.ssdp.interfaces = list;
+  renderSsdpConfigSection();
+  updateDirtyStateUI();
+  lucide.createIcons();
+}
+
+function addSsdpRule() {
+  if (!draftConfigData) return;
+  if (!draftConfigData.ssdp) draftConfigData.ssdp = { enabled: false, interfaces: [], default_action: 'forward', rules: [] };
+  draftConfigData.ssdp.rules.push({
+    action: 'allow',
+    method: null,
+    from: null,
+    to: null,
+    st: null,
+    usn: null,
+  });
+  renderSsdpConfigSection();
+  updateDirtyStateUI();
+  lucide.createIcons();
+}
+
+function deleteSsdpRule(idx) {
+  if (!draftConfigData || !draftConfigData.ssdp) return;
+  draftConfigData.ssdp.rules.splice(idx, 1);
+  renderSsdpConfigSection();
+  updateDirtyStateUI();
+  lucide.createIcons();
+}
+
+function updateSsdpRule(idx, field, val) {
+  if (!draftConfigData || !draftConfigData.ssdp || !draftConfigData.ssdp.rules[idx]) return;
+  const rule = draftConfigData.ssdp.rules[idx];
+  if (field === 'from' || field === 'to') {
+    const arr = String(val).split(',').map(s => s.trim()).filter(Boolean);
+    rule[field] = arr.length > 0 ? arr : null;
+  } else if (field === 'method' || field === 'st' || field === 'usn') {
+    const trimmed = String(val).trim();
+    rule[field] = trimmed.length > 0 ? trimmed : null;
+  } else {
+    rule[field] = val;
+  }
+  updateDirtyStateUI();
 }
 
 function allKnownInterfaceNames() {
