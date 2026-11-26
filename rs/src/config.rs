@@ -457,6 +457,57 @@ impl AppConfigData {
                 .filter(|s| !s.is_empty())
                 .collect();
         }
+
+        if let Some(ref mut ssdp) = self.ssdp {
+            let mut clean_ssdp_ifaces = Vec::new();
+            for iface in &ssdp.interfaces {
+                let trimmed = iface.trim();
+                if !trimmed.is_empty() && !clean_ssdp_ifaces.iter().any(|x: &String| x == trimmed) {
+                    clean_ssdp_ifaces.push(trimmed.to_string());
+                }
+            }
+            ssdp.interfaces = clean_ssdp_ifaces;
+
+            ssdp.default_action = ssdp
+                .default_action
+                .as_deref()
+                .map(|s| s.trim().to_lowercase())
+                .filter(|s| !s.is_empty());
+
+            let clean_opt_list = |opt: &Option<Vec<String>>| -> Option<Vec<String>> {
+                opt.as_ref().and_then(|list| {
+                    let mut cleaned = Vec::new();
+                    for item in list {
+                        let t = item.trim();
+                        if !t.is_empty() && !cleaned.iter().any(|x: &String| x == t) {
+                            cleaned.push(t.to_string());
+                        }
+                    }
+                    if cleaned.is_empty() { None } else { Some(cleaned) }
+                })
+            };
+
+            for rule in &mut ssdp.rules {
+                rule.action = rule.action.trim().to_lowercase();
+                rule.from = clean_opt_list(&rule.from);
+                rule.to = clean_opt_list(&rule.to);
+                rule.method = rule
+                    .method
+                    .as_deref()
+                    .map(|s| s.trim().to_ascii_uppercase())
+                    .filter(|s| !s.is_empty());
+                rule.st = rule
+                    .st
+                    .as_deref()
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty());
+                rule.usn = rule
+                    .usn
+                    .as_deref()
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty());
+            }
+        }
     }
 
     pub fn validate(&self) -> Result<(), String> {
@@ -521,6 +572,51 @@ impl AppConfigData {
             };
             validate_target(&rule.src, "src")?;
             validate_target(&rule.dst, "dst")?;
+        }
+
+        if let Some(ref ssdp) = self.ssdp {
+            for iface in &ssdp.interfaces {
+                if !is_valid_interface_name(iface) {
+                    return Err(format!("Invalid SSDP network interface name: '{}'", iface));
+                }
+            }
+            if let Some(ref da) = ssdp.default_action {
+                if !matches!(da.as_str(), "forward" | "drop" | "allow" | "deny") {
+                    return Err(format!(
+                        "ssdp.default_action must be 'forward', 'drop', 'allow', or 'deny', got '{}'",
+                        da
+                    ));
+                }
+            }
+            for (idx, rule) in ssdp.rules.iter().enumerate() {
+                let rule_num = idx + 1;
+                if !matches!(rule.action.as_str(), "allow" | "deny" | "forward" | "drop") {
+                    return Err(format!(
+                        "SSDP Rule #{}: action must be 'allow', 'deny', 'forward', or 'drop', got '{}'",
+                        rule_num, rule.action
+                    ));
+                }
+                if let Some(ref m) = rule.method {
+                    if !matches!(m.as_str(), "*" | "M-SEARCH" | "NOTIFY" | "RESPONSE") {
+                        return Err(format!(
+                            "SSDP Rule #{}: method must be 'M-SEARCH', 'NOTIFY', 'RESPONSE', or '*', got '{}'",
+                            rule_num, m
+                        ));
+                    }
+                }
+                for (label, list_opt) in [("from", &rule.from), ("to", &rule.to)] {
+                    if let Some(list) = list_opt {
+                        for iface in list {
+                            if iface != "*" && !is_valid_interface_name(iface) {
+                                return Err(format!(
+                                    "SSDP Rule #{}: invalid {} interface '{}'",
+                                    rule_num, label, iface
+                                ));
+                            }
+                        }
+                    }
+                }
+            }
         }
 
         Ok(())
@@ -681,11 +777,11 @@ impl AppConfig {
                     .default_action
                     .as_deref()
                     .map(|a| matches!(a.trim().to_ascii_lowercase().as_str(), "allow" | "forward"))
-                    .unwrap_or(default_action_is_forward);
+                    .unwrap_or(true);
                 let ssdp_rules = ssdp.rules.iter().map(SsdpRule::from_config).collect();
                 (ssdp.enabled, ssdp.interfaces.clone(), ssdp_default, ssdp_rules)
             } else {
-                (false, Vec::new(), false, Vec::new())
+                (false, Vec::new(), true, Vec::new())
             };
 
         Self {
@@ -920,5 +1016,59 @@ mod tests {
         assert_eq!(discovered[1].operstate, "down");
 
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_ssdp_config_validation_and_matching() {
+        let mut cfg = sample_config_data();
+        cfg.ssdp = Some(SsdpConfig {
+            enabled: true,
+            interfaces: vec![" eth0 ".to_string(), "eth0".to_string(), "wlan0".to_string()],
+            default_action: Some(" DROP ".to_string()),
+            rules: vec![SsdpRuleConfig {
+                action: " ALLOW ".to_string(),
+                from: Some(vec![" eth0 ".to_string()]),
+                to: Some(vec!["wlan0".to_string()]),
+                method: Some(" m-search ".to_string()),
+                st: Some(" urn:schemas-upnp-org:* ".to_string()),
+                usn: None,
+            }],
+        });
+
+        cfg.normalize();
+        assert!(cfg.validate().is_ok());
+        let ssdp = cfg.ssdp.as_ref().unwrap();
+        assert_eq!(ssdp.interfaces, vec!["eth0".to_string(), "wlan0".to_string()]);
+        assert_eq!(ssdp.default_action.as_deref(), Some("drop"));
+        assert_eq!(ssdp.rules[0].action, "allow");
+        assert_eq!(ssdp.rules[0].method.as_deref(), Some("M-SEARCH"));
+        assert_eq!(ssdp.rules[0].st.as_deref(), Some("urn:schemas-upnp-org:*"));
+
+        let app_cfg = AppConfig::from_data(&cfg);
+        assert!(app_cfg.ssdp_enabled);
+        assert!(!app_cfg.ssdp_default_action_is_forward);
+
+        let pkt_match = crate::ssdp::SsdpPacket {
+            method: crate::ssdp::SsdpMethod::MSearch,
+            st: Some("urn:schemas-upnp-org:device:MediaRenderer:1".to_string()),
+            nt: None,
+            nts: None,
+            usn: None,
+            location: None,
+            server: None,
+            mx: Some(3),
+            man: None,
+        };
+        assert!(app_cfg.should_forward_ssdp(&pkt_match, "eth0", "wlan0"));
+        assert!(!app_cfg.should_forward_ssdp(&pkt_match, "wlan0", "eth0"));
+
+        // Invalid SSDP method should fail validation
+        cfg.ssdp.as_mut().unwrap().rules[0].method = Some("INVALID".to_string());
+        assert!(cfg.validate().is_err());
+
+        // Invalid SSDP default_action should fail validation
+        cfg.ssdp.as_mut().unwrap().rules[0].method = Some("M-SEARCH".to_string());
+        cfg.ssdp.as_mut().unwrap().default_action = Some("bogus".to_string());
+        assert!(cfg.validate().is_err());
     }
 }

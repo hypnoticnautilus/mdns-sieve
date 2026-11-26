@@ -6,7 +6,8 @@ use std::time::Duration;
 
 use socket2::{Domain, Protocol, Socket, Type};
 use tokio::net::UdpSocket;
-use tokio::sync::{mpsc, watch, Mutex};
+use tokio::sync::{mpsc, watch, Mutex, Semaphore};
+use tokio::task::JoinSet;
 
 use crate::config::AppConfig;
 use crate::server::CommandServerManager;
@@ -79,6 +80,8 @@ impl SsdpReflector {
 
         let (pkt_tx, mut pkt_rx) = mpsc::channel::<(String, SocketAddrV4, Vec<u8>)>(256);
         let mut recv_tasks = Vec::new();
+        let mut relay_tasks: JoinSet<()> = JoinSet::new();
+        let relay_sem = Arc::new(Semaphore::new(64));
         let mut out_sockets: HashMap<String, Arc<UdpSocket>> = HashMap::new();
 
         for (iface, ip) in &iface_ips {
@@ -113,6 +116,9 @@ impl SsdpReflector {
         drop(pkt_tx);
 
         loop {
+            // Drain any completed relay tasks so the JoinSet doesn't accumulate finished handles
+            while relay_tasks.try_join_next().is_some() {}
+
             tokio::select! {
                 Some((src_iface, src_v4, data)) = pkt_rx.recv() => {
                     // Ignore packets originating from our own interface IPs
@@ -149,27 +155,32 @@ impl SsdpReflector {
                                 if cfg.should_forward_ssdp(&pkt, &src_iface, dst_iface) {
                                     fwd_ifaces.push(dst_iface.clone());
                                     if let Some(reply_sock) = out_sockets.get(&src_iface).cloned() {
-                                        let payload = data.clone();
-                                        let cfg_clone = cfg.clone();
-                                        let mgr_clone = self.server_mgr.clone();
-                                        let src_iface_c = src_iface.clone();
-                                        let dst_iface_c = dst_iface.clone();
-                                        let dst_ip_c = *dst_ip;
-                                        let verbose = self.verbose;
-                                        tokio::spawn(async move {
-                                            forward_msearch_and_relay_replies(
-                                                payload,
-                                                src_v4,
-                                                src_iface_c,
-                                                dst_iface_c,
-                                                dst_ip_c,
-                                                reply_sock,
-                                                wait_secs,
-                                                cfg_clone,
-                                                mgr_clone,
-                                                verbose,
-                                            ).await;
-                                        });
+                                        if let Ok(permit) = relay_sem.clone().try_acquire_owned() {
+                                            let payload = data.clone();
+                                            let cfg_clone = cfg.clone();
+                                            let mgr_clone = self.server_mgr.clone();
+                                            let src_iface_c = src_iface.clone();
+                                            let dst_iface_c = dst_iface.clone();
+                                            let dst_ip_c = *dst_ip;
+                                            let verbose = self.verbose;
+                                            relay_tasks.spawn(async move {
+                                                let _permit = permit;
+                                                forward_msearch_and_relay_replies(
+                                                    payload,
+                                                    src_v4,
+                                                    src_iface_c,
+                                                    dst_iface_c,
+                                                    dst_ip_c,
+                                                    reply_sock,
+                                                    wait_secs,
+                                                    cfg_clone,
+                                                    mgr_clone,
+                                                    verbose,
+                                                ).await;
+                                            });
+                                        } else if self.verbose {
+                                            eprintln!("[SSDP] Dropping M-SEARCH relay to {}: concurrency limit reached", dst_iface);
+                                        }
                                     }
                                 } else {
                                     drp_ifaces.push(dst_iface.clone());
@@ -216,25 +227,24 @@ impl SsdpReflector {
                         0u8
                     };
 
-                    let mgr = self.server_mgr.lock().await;
-                    if let Some(ref db) = mgr.db_manager {
-                        db.record_ssdp_message(
-                            &src_v4.ip().to_string(),
-                            &src_iface,
-                            pkt.method.as_str(),
-                            pkt.service_type(),
-                            pkt.usn.as_deref(),
-                            pkt.location.as_deref(),
-                            disp,
-                            &fwd_ifaces,
-                            &drp_ifaces,
-                        );
-                    }
+                    record_ssdp_async(
+                        &self.server_mgr,
+                        src_v4.ip().to_string(),
+                        src_iface,
+                        pkt.method.as_str().to_string(),
+                        pkt.service_type().map(str::to_string),
+                        pkt.usn,
+                        pkt.location,
+                        disp,
+                        fwd_ifaces,
+                        drp_ifaces,
+                    ).await;
                 }
                 res = self.config_rx.changed() => {
                     for h in recv_tasks {
                         h.abort();
                     }
+                    relay_tasks.abort_all();
                     if res.is_err() {
                         return Ok(());
                     }
@@ -307,25 +317,57 @@ async fn forward_msearch_and_relay_replies(
                         } else {
                             (2u8, Vec::new(), vec![orig_iface.clone()])
                         };
-                        let mgr = server_mgr.lock().await;
-                        if let Some(ref db) = mgr.db_manager {
-                            db.record_ssdp_message(
-                                &responder.ip().to_string(),
-                                &dst_iface,
-                                pkt.method.as_str(),
-                                pkt.service_type(),
-                                pkt.usn.as_deref(),
-                                pkt.location.as_deref(),
-                                disp,
-                                &fwd,
-                                &drp,
-                            );
-                        }
+                        record_ssdp_async(
+                            &server_mgr,
+                            responder.ip().to_string(),
+                            dst_iface.clone(),
+                            pkt.method.as_str().to_string(),
+                            pkt.service_type().map(str::to_string),
+                            pkt.usn,
+                            pkt.location,
+                            disp,
+                            fwd,
+                            drp,
+                        ).await;
                     }
                 }
             }
             _ => break,
         }
+    }
+}
+
+async fn record_ssdp_async(
+    server_mgr: &Arc<Mutex<CommandServerManager>>,
+    src_ip: String,
+    src_interface: String,
+    method: String,
+    st: Option<String>,
+    usn: Option<String>,
+    location: Option<String>,
+    disposition: u8,
+    forwarded_interfaces: Vec<String>,
+    dropped_interfaces: Vec<String>,
+) {
+    let db_opt = {
+        let mgr = server_mgr.lock().await;
+        mgr.db_manager.clone()
+    };
+    if let Some(db) = db_opt {
+        let _ = tokio::task::spawn_blocking(move || {
+            db.record_ssdp_message(
+                &src_ip,
+                &src_interface,
+                &method,
+                st.as_deref(),
+                usn.as_deref(),
+                location.as_deref(),
+                disposition,
+                &forwarded_interfaces,
+                &dropped_interfaces,
+            );
+        })
+        .await;
     }
 }
 

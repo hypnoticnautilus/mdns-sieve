@@ -372,12 +372,22 @@ struct SsdpHistoryQuery {
 async fn api_ssdp_history(
     State(mgr): State<Arc<Mutex<CommandServerManager>>>,
     Query(params): Query<SsdpHistoryQuery>,
-) -> impl IntoResponse {
+) -> Json<Value> {
     let page = params.page.unwrap_or(1).max(1);
     let limit = params.limit.unwrap_or(50).clamp(1, 200);
     let (db_opt, interfaces) = {
         let mgr_guard = mgr.lock().await;
-        (mgr_guard.db_manager.clone(), mgr_guard.configured_interfaces.clone())
+        let mut ifaces = mgr_guard.configured_interfaces.clone();
+        if let Some(ref cfg) = mgr_guard.config_data {
+            if let Some(ref ssdp) = cfg.ssdp {
+                for iface in &ssdp.interfaces {
+                    if !ifaces.contains(iface) {
+                        ifaces.push(iface.clone());
+                    }
+                }
+            }
+        }
+        (mgr_guard.db_manager.clone(), ifaces)
     };
     if let Some(db) = db_opt {
         let filters = SsdpHistoryFilterParams {
@@ -395,24 +405,24 @@ async fn api_ssdp_history(
         let (items, total) = tokio::task::spawn_blocking(move || db.get_ssdp_history(&filters))
             .await
             .unwrap_or_default();
-        let total_pages = (total + limit - 1) / limit.max(1);
-        return Json(serde_json::json!({
-            "items": items,
-            "total": total,
-            "page": page,
-            "limit": limit,
-            "total_pages": total_pages.max(1),
-            "interfaces": interfaces
-        })).into_response();
+        let total_pages = if total == 0 { 1 } else { (total + limit - 1) / limit };
+        Json(serde_json::json!({
+            "status": "ok",
+            "data": {
+                "items": items,
+                "total": total,
+                "page": page,
+                "limit": limit,
+                "total_pages": total_pages,
+                "interfaces": interfaces
+            }
+        }))
+    } else {
+        Json(serde_json::json!({
+            "status": "error",
+            "error": "Database tracking is disabled"
+        }))
     }
-    Json(serde_json::json!({
-        "items": [],
-        "total": 0,
-        "page": page,
-        "limit": limit,
-        "total_pages": 1,
-        "interfaces": interfaces
-    })).into_response()
 }
 
 async fn api_stats(State(manager): State<Arc<Mutex<CommandServerManager>>>) -> Json<Value> {
@@ -698,6 +708,85 @@ mod tests {
 
         let _ = std::fs::remove_file(&cfg_path);
         let _ = std::fs::remove_file(&bak_path);
+        let _ = std::fs::remove_file(&db_path);
+    }
+
+    #[tokio::test]
+    async fn test_api_ssdp_history_response_shape() {
+        let nanos = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+        let cfg_path = std::env::temp_dir().join(format!("mdns_ssdp_srv_{}.yaml", nanos));
+        let db_path = std::env::temp_dir().join(format!("mdns_ssdp_srv_{}.db", nanos));
+
+        let data = AppConfigData {
+            interfaces: vec!["eth0".to_string()],
+            default_action: "forward".to_string(),
+            rewrite_mixed_packets: false,
+            forward_known_answers: false,
+            web_server: Some(WebServerConfig {
+                enabled: true,
+                host: "127.0.0.1".to_string(),
+                port: 8080,
+            }),
+            tracking: Some(TrackingConfig {
+                enabled: true,
+                max_records: 1000,
+                db_path: db_path.to_string_lossy().to_string(),
+                flush_interval_seconds: 60,
+                retention_days: 7,
+                history_retention_days: None,
+                max_history_records: None,
+            }),
+            rules: vec![],
+            ssdp: Some(crate::config::SsdpConfig {
+                enabled: true,
+                interfaces: vec!["eth0".to_string(), "br-iot".to_string()],
+                default_action: Some("forward".to_string()),
+                rules: vec![],
+            }),
+        };
+
+        let (tx, _rx) = tokio::sync::watch::channel(Arc::new(AppConfig::from_data(&data)));
+        let mut mgr = CommandServerManager::new(
+            data.web_server.clone(),
+            data.tracking.clone(),
+            data.interfaces.clone(),
+        );
+        mgr.set_config_context(cfg_path.to_string_lossy().to_string(), data, tx);
+        mgr.db_manager.as_ref().unwrap().record_ssdp_message(
+            "192.168.1.20",
+            "br-iot",
+            "RESPONSE",
+            Some("upnp:rootdevice"),
+            Some("uuid:abc::upnp:rootdevice"),
+            None,
+            0,
+            &["eth0".to_string()],
+            &[],
+        );
+
+        let mgr_arc = Arc::new(Mutex::new(mgr));
+        let Json(resp) = api_ssdp_history(
+            State(mgr_arc),
+            Query(SsdpHistoryQuery {
+                page: Some(1),
+                limit: Some(50),
+                content_search: None,
+                src_ip: None,
+                src_interface: None,
+                dst_interface: None,
+                disposition: None,
+                method: Some("RESPONSE".to_string()),
+                from_time: None,
+                to_time: None,
+            }),
+        ).await;
+
+        assert_eq!(resp["status"], "ok");
+        assert_eq!(resp["data"]["total"], 1);
+        assert_eq!(resp["data"]["items"][0]["method"], "RESPONSE");
+        let ifaces = resp["data"]["interfaces"].as_array().unwrap();
+        assert!(ifaces.iter().any(|v| v == "br-iot"));
+
         let _ = std::fs::remove_file(&db_path);
     }
 }

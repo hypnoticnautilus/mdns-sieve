@@ -279,6 +279,7 @@ impl DatabaseManager {
 
         if let Ok(conn) = self.get_connection() {
             let _ = conn.execute("DELETE FROM messages WHERE timestamp < ?1", params![threshold]);
+            let _ = conn.execute("DELETE FROM ssdp_messages WHERE timestamp < ?1", params![threshold]);
 
             if max_records > 0 {
                 let count: usize = conn.query_row("SELECT COUNT(*) FROM messages", [], |r| r.get(0)).unwrap_or(0);
@@ -286,6 +287,15 @@ impl DatabaseManager {
                     let excess = (count - max_records) as i64;
                     let _ = conn.execute(
                         "DELETE FROM messages WHERE id IN (SELECT id FROM messages ORDER BY timestamp ASC, id ASC LIMIT ?1)",
+                        params![excess],
+                    );
+                }
+
+                let ssdp_count: usize = conn.query_row("SELECT COUNT(*) FROM ssdp_messages", [], |r| r.get(0)).unwrap_or(0);
+                if ssdp_count > max_records {
+                    let excess = (ssdp_count - max_records) as i64;
+                    let _ = conn.execute(
+                        "DELETE FROM ssdp_messages WHERE id IN (SELECT id FROM ssdp_messages ORDER BY timestamp ASC, id ASC LIMIT ?1)",
                         params![excess],
                     );
                 }
@@ -939,6 +949,12 @@ mod tests {
         });
         assert_eq!(disp_total, 1);
         assert_eq!(disp_items[0].src_ip, "10.0.0.25");
+
+        // Verify prune_old_records trims ssdp_messages by max_records
+        db.prune_old_records(7, 1);
+        let (pruned_items, pruned_total) = db.get_ssdp_history(&SsdpHistoryFilterParams::default());
+        assert_eq!(pruned_total, 1);
+        assert_eq!(pruned_items.len(), 1);
 
         let _ = fs::remove_file(path);
     }

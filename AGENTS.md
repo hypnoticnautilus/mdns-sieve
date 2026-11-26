@@ -35,7 +35,7 @@ Use the local deployment script to push updates to target hosts (e.g., Alpine on
 ## Architecture Notes
 
 ### Database Persistence & Telemetry Tracking
-- The reflector acts as an mDNS repeater and filter, persisting metrics into an SQLite database (by default at `/var/lib/mdns-sieve/responses.db` containing `messages`, `message_items`, and `global_stats` tables).
+- The reflector acts as an mDNS repeater and filter, persisting metrics into an SQLite database (by default at `/var/lib/mdns-sieve/responses.db` containing `messages`, `message_items`, `ssdp_messages`, and `global_stats` tables).
 - The system catches `SIGINT` and `SIGTERM` signals to cleanly flush databases and exit.
 - Tracking logic is contained in `rs/src/database.rs`.
 - Memory buffers are periodically flushed to the database and pruned based on `retention_days` and `max_records`. When writing unit tests with mock timestamps, always use current times rather than older epoch constants to prevent records from being immediately pruned by the retention manager.
@@ -44,6 +44,7 @@ Use the local deployment script to push updates to target hosts (e.g., Alpine on
 - The daemon features an embedded web server running on `axum` (`rs/src/server.rs`) which exposes both the JSON API and the dashboard GUI.
 - `/api/stats`: Returns aggregated global packet counts (`total`, `forwarded`, `partially_forwarded`, `dropped`), configured interfaces, daemon version, and commit information.
 - `/api/history`: Returns paginated message history with per-question and per-resource-record items, supporting filters for query name, response name/rdata, source IP, ingress interface, destination interface, disposition, packet type, and time range.
+- `/api/ssdp/history`: Returns paginated SSDP message history (`items`, `total`, `page`, `limit`, `total_pages`, `interfaces`), supporting filters for `content_search` (`st`/`usn`), `src_ip`, `src_interface`, `dst_interface`, `disposition`, `method`, and time range.
 - `/api/clear` (POST): Resets statistics. Passing a JSON payload `{"clear_tracking": true}` will also purge all message history database tables and active memory buffers.
 - `/api/config` (GET / POST): Reads or updates the active daemon configuration (`AppConfigData` or raw YAML), writes an atomic `.bak` backup before saving to the YAML file, and hot-reloads the `Reflector` and `CommandServerManager` in memory via a `tokio::sync::watch` channel.
 - `/api/interfaces` (GET): Scans `/sys/class/net` for system network interfaces and operational states (`up`/`down`) alongside currently configured interfaces.

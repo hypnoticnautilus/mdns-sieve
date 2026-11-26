@@ -785,9 +785,8 @@ async function loadSsdpHistory(page = 1, silent = false) {
   if (to !== null && !isNaN(to)) url += `&to_time=${to}`;
 
   try {
-    const res = await fetch(url);
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    const data = await res.json();
+    const res = await fetchApi(url);
+    const data = res.data || {};
     if (data.interfaces) {
       updateInterfaceDropdowns(data.interfaces);
     }
@@ -1728,19 +1727,19 @@ function renderSsdpConfigSection() {
             </div>
             <div class="form-group">
               <label>From Interfaces (comma-sep)</label>
-              <input type="text" class="config-input" placeholder="* or eth0,wlan0" value="${escapeHtml((r.from || []).join(','))}" onchange="updateSsdpRule(${idx}, 'from', this.value)">
+              <input type="text" class="config-input" placeholder="* or eth0,wlan0" value="${escapeHtml((r.from || []).join(','))}" oninput="updateSsdpRule(${idx}, 'from', this.value)">
             </div>
             <div class="form-group">
               <label>To Interfaces (comma-sep)</label>
-              <input type="text" class="config-input" placeholder="* or eth0,wlan0" value="${escapeHtml((r.to || []).join(','))}" onchange="updateSsdpRule(${idx}, 'to', this.value)">
+              <input type="text" class="config-input" placeholder="* or eth0,wlan0" value="${escapeHtml((r.to || []).join(','))}" oninput="updateSsdpRule(${idx}, 'to', this.value)">
             </div>
             <div class="form-group">
               <label>ST / NT Pattern</label>
-              <input type="text" class="config-input" placeholder="e.g. urn:schemas-upnp-org:*" value="${escapeHtml(r.st || '')}" onchange="updateSsdpRule(${idx}, 'st', this.value)">
+              <input type="text" class="config-input" placeholder="e.g. urn:schemas-upnp-org:*" value="${escapeHtml(r.st || '')}" oninput="updateSsdpRule(${idx}, 'st', this.value)">
             </div>
             <div class="form-group">
               <label>USN Pattern</label>
-              <input type="text" class="config-input" placeholder="e.g. uuid:*" value="${escapeHtml(r.usn || '')}" onchange="updateSsdpRule(${idx}, 'usn', this.value)">
+              <input type="text" class="config-input" placeholder="e.g. uuid:*" value="${escapeHtml(r.usn || '')}" oninput="updateSsdpRule(${idx}, 'usn', this.value)">
             </div>
           </div>
           <div style="margin-top: 8px; text-align: right;">
@@ -1827,6 +1826,9 @@ function allKnownInterfaceNames() {
   });
   if (draftConfigData && Array.isArray(draftConfigData.interfaces)) {
     draftConfigData.interfaces.forEach(iface => names.add(iface));
+  }
+  if (draftConfigData && draftConfigData.ssdp && Array.isArray(draftConfigData.ssdp.interfaces)) {
+    draftConfigData.ssdp.interfaces.forEach(iface => names.add(iface));
   }
   return Array.from(names);
 }
@@ -2562,6 +2564,37 @@ function generateClientSideYamlPreview(cfg) {
         rule.hosts.forEach(h => lines.push(`      - ${yamlQuoteScalar(h)}`));
       }
     });
+  }
+
+  if (cfg.ssdp) {
+    lines.push('');
+    lines.push('# 6. SSDP Reflector (239.255.255.250:1900)');
+    lines.push('ssdp:');
+    lines.push(`  enabled: ${Boolean(cfg.ssdp.enabled)}`);
+    lines.push(`  default_action: ${yamlQuoteScalar(cfg.ssdp.default_action || 'forward')}`);
+    if (!cfg.ssdp.interfaces || cfg.ssdp.interfaces.length === 0) {
+      lines.push('  interfaces: []');
+    } else {
+      lines.push('  interfaces:');
+      cfg.ssdp.interfaces.forEach(iface => lines.push(`    - ${yamlQuoteScalar(iface)}`));
+    }
+    if (!cfg.ssdp.rules || cfg.ssdp.rules.length === 0) {
+      lines.push('  rules: []');
+    } else {
+      lines.push('  rules:');
+      cfg.ssdp.rules.forEach(r => {
+        lines.push(`    - action: ${yamlQuoteScalar(r.action || 'allow')}`);
+        if (r.method) lines.push(`      method: ${yamlQuoteScalar(r.method)}`);
+        if (Array.isArray(r.from) && r.from.length > 0) {
+          lines.push(`      from: [${r.from.map(yamlQuoteScalar).join(', ')}]`);
+        }
+        if (Array.isArray(r.to) && r.to.length > 0) {
+          lines.push(`      to: [${r.to.map(yamlQuoteScalar).join(', ')}]`);
+        }
+        if (r.st) lines.push(`      st: ${yamlQuoteScalar(r.st)}`);
+        if (r.usn) lines.push(`      usn: ${yamlQuoteScalar(r.usn)}`);
+      });
+    }
   }
 
   return lines.join('\n') + '\n';
