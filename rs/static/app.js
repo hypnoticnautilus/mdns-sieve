@@ -327,31 +327,24 @@ function updateInterfaceDropdowns(interfacesList) {
 
   const sorted = Array.from(knownInterfaces).sort();
 
-  const srcSelect = document.getElementById('historyInterfaceFilter');
-  if (srcSelect) {
-    const currentVal = srcSelect.value;
-    srcSelect.innerHTML = '<option value="">All Ingress Interfaces</option>';
+  const populateSelect = (id, prefix, defaultText) => {
+    const el = document.getElementById(id);
+    if (!el) return;
+    const currentVal = el.value;
+    el.innerHTML = `<option value="">${defaultText}</option>`;
     sorted.forEach(iface => {
       const opt = document.createElement('option');
       opt.value = iface;
-      opt.textContent = `Ingress: ${iface}`;
+      opt.textContent = `${prefix}: ${iface}`;
       if (iface === currentVal) opt.selected = true;
-      srcSelect.appendChild(opt);
+      el.appendChild(opt);
     });
-  }
+  };
 
-  const dstSelect = document.getElementById('historyDstInterfaceFilter');
-  if (dstSelect) {
-    const currentVal = dstSelect.value;
-    dstSelect.innerHTML = '<option value="">All Destination Interfaces</option>';
-    sorted.forEach(iface => {
-      const opt = document.createElement('option');
-      opt.value = iface;
-      opt.textContent = `Forwarded To: ${iface}`;
-      if (iface === currentVal) opt.selected = true;
-      dstSelect.appendChild(opt);
-    });
-  }
+  populateSelect('historyInterfaceFilter', 'Ingress', 'All Ingress Interfaces');
+  populateSelect('historyDstInterfaceFilter', 'Forwarded To', 'All Destination Interfaces');
+  populateSelect('ssdpInterfaceFilter', 'Ingress', 'All Ingress Interfaces');
+  populateSelect('ssdpDstInterfaceFilter', 'Forwarded To', 'All Destination Interfaces');
 }
 
 async function refreshData() {
@@ -373,6 +366,8 @@ async function refreshData() {
 
     if (currentMainView === 'history') {
       await loadHistoryData(currentHistoryPage, true);
+    } else if (currentMainView === 'ssdp') {
+      await loadSsdpHistory(currentSsdpPage, true);
     }
 
     const statusLabel = document.getElementById('infoDaemonStatus');
@@ -641,6 +636,8 @@ async function executeClearStats() {
 
       if (clearTracking && currentMainView === 'history') {
         loadHistoryData(1);
+      } else if (clearTracking && currentMainView === 'ssdp') {
+        loadSsdpHistory(1);
       }
 
       refreshData();
@@ -651,7 +648,7 @@ async function executeClearStats() {
 }
 
 /* ==========================================================================
-   Main View Switcher (Live Dashboard / Message History)
+   Main View Switcher (Live Dashboard / Message History / Configuration)
    ========================================================================== */
 let currentMainView = 'live';
 
@@ -659,23 +656,364 @@ function switchMainView(view) {
   currentMainView = view;
   const btnLive = document.getElementById('viewBtnLive');
   const btnHistory = document.getElementById('viewBtnHistory');
+  const btnSsdp = document.getElementById('viewBtnSsdp');
+  const btnConfig = document.getElementById('viewBtnConfig');
   const viewLive = document.getElementById('liveDashboardView');
   const viewHistory = document.getElementById('messageHistoryView');
+  const viewSsdp = document.getElementById('ssdpHistoryView');
+  const viewConfig = document.getElementById('configurationView');
 
-  if (view === 'live') {
-    btnLive.classList.add('active');
-    btnHistory.classList.remove('active');
-    viewLive.classList.remove('hidden');
-    viewHistory.classList.add('hidden');
-  } else {
-    btnLive.classList.remove('active');
-    btnHistory.classList.add('active');
-    viewLive.classList.add('hidden');
-    viewHistory.classList.remove('hidden');
+  btnLive.classList.toggle('active', view === 'live');
+  btnHistory.classList.toggle('active', view === 'history');
+  if (btnSsdp) btnSsdp.classList.toggle('active', view === 'ssdp');
+  if (btnConfig) btnConfig.classList.toggle('active', view === 'config');
+
+  viewLive.classList.toggle('hidden', view !== 'live');
+  viewHistory.classList.toggle('hidden', view !== 'history');
+  if (viewSsdp) viewSsdp.classList.toggle('hidden', view !== 'ssdp');
+  if (viewConfig) viewConfig.classList.toggle('hidden', view !== 'config');
+
+  if (view === 'history') {
     loadHistoryData(currentHistoryPage);
+  } else if (view === 'ssdp') {
+    loadSsdpHistory(currentSsdpPage);
+  } else if (view === 'config') {
+    ensureConfigViewInitialized();
   }
 
   lucide.createIcons();
+}
+
+/* ==========================================================================
+   SSDP History Logic & Rendering
+   ========================================================================== */
+let currentSsdpPage = 1;
+let totalSsdpPages = 1;
+let expandedSsdpIds = new Set();
+let currentSsdpRecords = [];
+
+function ssdpDispToMdns(disp) {
+  if (disp === 0) return 1; // Forwarded
+  if (disp === 1) return 2; // Partially Forwarded
+  return 0;                 // Dropped
+}
+
+function onSsdpPresetChange() {
+  const preset = document.getElementById('ssdpTimePreset').value;
+  const customRow = document.getElementById('ssdpCustomTimeRow');
+  if (preset === 'custom') {
+    customRow.classList.remove('hidden');
+  } else {
+    customRow.classList.add('hidden');
+    loadSsdpHistory(1);
+  }
+}
+
+function getSsdpTimeRange() {
+  const preset = document.getElementById('ssdpTimePreset').value;
+  const now = Date.now() / 1000;
+
+  if (preset === '15m') return { from: now - 15 * 60, to: null };
+  if (preset === '1h') return { from: now - 3600, to: null };
+  if (preset === '24h') return { from: now - 86400, to: null };
+  if (preset === '7d') return { from: now - 7 * 86400, to: null };
+  if (preset === 'all') return { from: null, to: null };
+  if (preset === 'custom') {
+    const fromVal = document.getElementById('ssdpTimeFrom').value;
+    const toVal = document.getElementById('ssdpTimeTo').value;
+    const from = fromVal ? new Date(fromVal).getTime() / 1000 : null;
+    const to = toVal ? new Date(toVal).getTime() / 1000 : null;
+    return { from, to };
+  }
+  return { from: now - 7 * 86400, to: null };
+}
+
+function resetSsdpFilters() {
+  document.getElementById('ssdpContentSearch').value = '';
+  document.getElementById('ssdpSrcIpFilter').value = '';
+  document.getElementById('ssdpInterfaceFilter').value = '';
+  document.getElementById('ssdpDstInterfaceFilter').value = '';
+  document.getElementById('ssdpDispositionFilter').value = '';
+  document.getElementById('ssdpMethodFilter').value = '';
+  document.getElementById('ssdpTimePreset').value = '7d';
+  document.getElementById('ssdpCustomTimeRow').classList.add('hidden');
+  document.getElementById('ssdpTimeFrom').value = '';
+  document.getElementById('ssdpTimeTo').value = '';
+  loadSsdpHistory(1);
+}
+
+function ssdpGoToPage(page) {
+  if (page < 1 || page > totalSsdpPages) return;
+  loadSsdpHistory(page);
+}
+
+function toggleSsdpExpand(recordId, e) {
+  if (e) e.stopPropagation();
+  if (expandedSsdpIds.has(recordId)) {
+    expandedSsdpIds.delete(recordId);
+  } else {
+    expandedSsdpIds.add(recordId);
+  }
+  renderSsdpTableRows();
+}
+
+async function loadSsdpHistory(page = 1, silent = false) {
+  currentSsdpPage = page;
+  const pageSize = parseInt(document.getElementById('ssdpPageSize')?.value || '50', 10);
+  const contentSearch = document.getElementById('ssdpContentSearch')?.value.trim() || '';
+  const srcIp = document.getElementById('ssdpSrcIpFilter')?.value.trim() || '';
+  const srcIface = document.getElementById('ssdpInterfaceFilter')?.value || '';
+  const dstIface = document.getElementById('ssdpDstInterfaceFilter')?.value || '';
+  const disposition = document.getElementById('ssdpDispositionFilter')?.value ?? '';
+  const method = document.getElementById('ssdpMethodFilter')?.value || '';
+  const { from, to } = getSsdpTimeRange();
+
+  const tbody = document.getElementById('ssdpHistoryTableBody');
+  if (!tbody) return;
+  if (!silent && currentSsdpRecords.length === 0) {
+    tbody.innerHTML = '<tr><td colspan="9" class="table-empty">Loading SSDP message history...</td></tr>';
+  }
+
+  let url = `/api/ssdp/history?page=${page}&limit=${pageSize}`;
+  if (contentSearch) url += `&content_search=${encodeURIComponent(contentSearch)}`;
+  if (srcIp) url += `&src_ip=${encodeURIComponent(srcIp)}`;
+  if (srcIface) url += `&src_interface=${encodeURIComponent(srcIface)}`;
+  if (dstIface) url += `&dst_interface=${encodeURIComponent(dstIface)}`;
+  if (disposition !== '') url += `&disposition=${encodeURIComponent(disposition)}`;
+  if (method) url += `&method=${encodeURIComponent(method)}`;
+  if (from !== null && !isNaN(from)) url += `&from_time=${from}`;
+  if (to !== null && !isNaN(to)) url += `&to_time=${to}`;
+
+  try {
+    const res = await fetchApi(url);
+    const data = res.data || {};
+    if (data.interfaces) {
+      updateInterfaceDropdowns(data.interfaces);
+    }
+    currentSsdpRecords = data.items || [];
+    const total = data.total || 0;
+    totalSsdpPages = data.total_pages || Math.max(1, Math.ceil(total / pageSize));
+
+    renderSsdpTable(total, page, pageSize);
+  } catch (e) {
+    tbody.innerHTML = `<tr><td colspan="9" class="table-empty">Failed to load SSDP history: ${escapeHtml(e.message || e)}</td></tr>`;
+  }
+}
+
+function renderSsdpTable(total, page, pageSize) {
+  const startIdx = total === 0 ? 0 : (page - 1) * pageSize + 1;
+  const endIdx = Math.min(page * pageSize, total);
+  document.getElementById('ssdpPaginationInfo').textContent = `Showing ${startIdx.toLocaleString()} - ${endIdx.toLocaleString()} of ${total.toLocaleString()} messages`;
+  document.getElementById('ssdpPageIndicator').textContent = `Page ${page} of ${totalSsdpPages}`;
+
+  document.getElementById('btnSsdpFirst').disabled = page <= 1;
+  document.getElementById('btnSsdpPrev').disabled = page <= 1;
+  document.getElementById('btnSsdpNext').disabled = page >= totalSsdpPages;
+  document.getElementById('btnSsdpLast').disabled = page >= totalSsdpPages;
+
+  renderSsdpTableRows();
+}
+
+function renderSsdpTableRows() {
+  const tbody = document.getElementById('ssdpHistoryTableBody');
+  if (!tbody) return;
+  tbody.innerHTML = '';
+
+  if (currentSsdpRecords.length === 0) {
+    tbody.innerHTML = '<tr><td colspan="9" class="table-empty">No matching SSDP messages found.</td></tr>';
+    return;
+  }
+
+  currentSsdpRecords.forEach((item, index) => {
+    const recordId = item.id !== undefined && item.id !== null ? item.id : index;
+    const isExpanded = expandedSsdpIds.has(recordId);
+    const fwdArr = Array.isArray(item.forwarded_interfaces) ? item.forwarded_interfaces : [];
+    const dropArr = Array.isArray(item.dropped_interfaces) ? item.dropped_interfaces : [];
+    const fwdStr = fwdArr.join(',');
+    const dropStr = dropArr.join(',');
+    const mdnsDisp = ssdpDispToMdns(item.disposition);
+
+    const d = new Date(item.timestamp * 1000);
+    const timeFormatted = d.toLocaleDateString() + ' ' + d.toLocaleTimeString();
+
+    const msgDotHtml = renderDispositionDot(mdnsDisp, fwdStr, dropStr, false);
+    const methodCss = item.method === 'M-SEARCH' ? 'query' : 'response';
+
+    const dstBadges = fwdArr.length > 0
+      ? fwdArr.map(x => `<span class="route-badge-fwd" title="Forwarded to ${escapeHtml(x)}">${escapeHtml(x)}</span>`).join(' ')
+      : '<span style="color: var(--text-muted); font-size: 11px;">None</span>';
+
+    const previewPills = [];
+    if (item.st) {
+      previewPills.push(`<span class="preview-item-pill">${msgDotHtml}<span class="preview-item-text" title="ST / NT: ${escapeHtml(item.st)}">ST: ${escapeHtml(item.st)}</span></span>`);
+    }
+    if (item.usn) {
+      previewPills.push(`<span class="preview-item-pill"><span class="preview-item-text" title="USN: ${escapeHtml(item.usn)}">USN: ${escapeHtml(item.usn)}</span></span>`);
+    }
+    const previewHtml = previewPills.length > 0
+      ? `<div class="preview-items-wrap">${previewPills.join('')}</div>`
+      : '<span style="color: var(--text-muted); font-size: 12px;">-</span>';
+
+    const tr = document.createElement('tr');
+    tr.className = `history-row ${isExpanded ? 'expanded' : ''}`;
+    tr.onclick = (e) => toggleSsdpExpand(recordId, e);
+
+    tr.innerHTML = `
+      <td>
+        <span class="history-expand-icon">
+          <i data-lucide="${isExpanded ? 'chevron-down' : 'chevron-right'}"></i>
+        </span>
+      </td>
+      <td style="text-align: center;">${msgDotHtml}</td>
+      <td title="${item.timestamp} (UNIX)">${timeFormatted}</td>
+      <td><strong>${escapeHtml(item.src_ip)}</strong></td>
+      <td><span class="badge" style="font-size: 11px;">${escapeHtml(item.src_interface)}</span></td>
+      <td><span class="badge-type ${methodCss}">${escapeHtml(item.method)}</span></td>
+      <td><div style="display: flex; gap: 4px; flex-wrap: wrap;">${dstBadges}</div></td>
+      <td>${previewHtml}</td>
+      <td style="text-align: right;">
+        <button class="btn-quick-rule" title="Create SSDP filtering rule from this message"
+          data-src="${escapeHtml(item.src_interface)}"
+          data-disp="${item.disposition}"
+          data-method="${escapeHtml(item.method)}"
+          data-st="${escapeHtml(item.st || '')}"
+          data-usn="${escapeHtml(item.usn || '')}"
+          onclick="createQuickRuleFromSsdpHistory(this, event)">
+          <i data-lucide="plus"></i>
+          <span>Rule</span>
+        </button>
+      </td>
+    `;
+    tbody.appendChild(tr);
+
+    if (isExpanded) {
+      const detailTr = document.createElement('tr');
+      detailTr.className = 'history-detail-tr';
+      const msgDispInfo = dispositionInfo(mdnsDisp, fwdStr, dropStr);
+
+      const copyField = (val, label) => val
+        ? `<div class="service-name-wrapper">
+             <span style="word-break: break-all;">${escapeHtml(val)}</span>
+             <button class="copy-name-btn" title="Copy ${escapeHtml(label)}" data-copy="${escapeHtml(val)}" onclick="copyToClipboard(this, event)">
+               <i data-lucide="copy"></i>
+             </button>
+           </div>`
+        : '<span style="color: var(--text-muted);">-</span>';
+
+      detailTr.innerHTML = `
+        <td colspan="9">
+          <div class="history-detail-content">
+            <div class="routing-summary-box">
+              <div class="routing-summary-item">
+                <span class="routing-summary-label">Disposition:</span>
+                ${msgDotHtml}
+                <strong>${escapeHtml(msgDispInfo.label)}</strong>
+              </div>
+              <div class="routing-summary-item">
+                <span class="routing-summary-label">Source:</span>
+                <span><strong>${escapeHtml(item.src_ip)}</strong> on <code>${escapeHtml(item.src_interface)}</code></span>
+              </div>
+              <div class="routing-summary-item">
+                <span class="routing-summary-label">Interface Routing:</span>
+                <div style="display: flex; gap: 4px; flex-wrap: wrap;">${renderRoutingBadges(fwdStr, dropStr)}</div>
+              </div>
+              <div class="routing-summary-item">
+                <span class="routing-summary-label">Exact Timestamp:</span>
+                <code>${item.timestamp}</code>
+              </div>
+            </div>
+
+            <div class="detail-card">
+              <div class="detail-card-title">
+                <i data-lucide="radio" style="width: 14px; height: 14px;"></i>
+                <span>SSDP Packet Headers</span>
+              </div>
+              <table class="detail-card-table">
+                <thead>
+                  <tr>
+                    <th style="width: 140px;">Header</th>
+                    <th>Value</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr>
+                    <td><strong>Method</strong></td>
+                    <td><span class="badge-type ${methodCss}">${escapeHtml(item.method)}</span></td>
+                  </tr>
+                  <tr>
+                    <td><strong>ST / NT</strong></td>
+                    <td>${copyField(item.st, 'ST / NT')}</td>
+                  </tr>
+                  <tr>
+                    <td><strong>USN</strong></td>
+                    <td>${copyField(item.usn, 'USN')}</td>
+                  </tr>
+                  <tr>
+                    <td><strong>Location</strong></td>
+                    <td>${copyField(item.location, 'Location')}</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </td>
+      `;
+      tbody.appendChild(detailTr);
+    }
+  });
+
+  lucide.createIcons();
+}
+
+async function createQuickRuleFromSsdpHistory(btnEl, event) {
+  if (event) event.stopPropagation();
+  if (!btnEl) return;
+
+  const srcIface = btnEl.getAttribute('data-src') || '';
+  const disp = Number(btnEl.getAttribute('data-disp') || 0);
+  const method = (btnEl.getAttribute('data-method') || '').trim();
+  const st = (btnEl.getAttribute('data-st') || '').trim();
+  const usn = (btnEl.getAttribute('data-usn') || '').trim();
+
+  if (!configInitialized) {
+    configInitialized = true;
+    await Promise.all([loadConfigFromServer(), loadSystemInterfaces()]);
+  }
+
+  if (!draftConfigData) return;
+  if (!draftConfigData.ssdp) {
+    draftConfigData.ssdp = { enabled: false, interfaces: [], default_action: 'forward', rules: [] };
+  }
+  if (!Array.isArray(draftConfigData.ssdp.rules)) {
+    draftConfigData.ssdp.rules = [];
+  }
+
+  // Toggle opposite action: 2 = Dropped -> allow, otherwise deny
+  const targetAction = disp === 2 ? 'allow' : 'deny';
+  const draftRule = {
+    action: targetAction,
+    method: method || null,
+    from: srcIface ? [srcIface] : null,
+    to: null,
+    st: st || null,
+    usn: usn || null,
+  };
+
+  draftConfigData.ssdp.rules.unshift(draftRule);
+  renderSsdpConfigSection();
+  updateDirtyStateUI();
+  switchMainView('config');
+  showConfigFeedback(
+    'info',
+    `Drafted a new SSDP ${targetAction.toUpperCase()} rule #1 for "${st || usn || method || '*'}" from ${srcIface || '*'}. Click "Save & Apply" to activate.`
+  );
+
+  setTimeout(() => {
+    const container = document.getElementById('cfgSsdpRulesContainer');
+    if (container) {
+      container.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    }
+  }, 100);
 }
 
 /* ==========================================================================
@@ -717,8 +1055,7 @@ function getHistoryTimeRange() {
 }
 
 function resetHistoryFilters() {
-  document.getElementById('historyQuerySearch').value = '';
-  document.getElementById('historyResponseSearch').value = '';
+  document.getElementById('historyContentSearch').value = '';
   document.getElementById('historySrcIpFilter').value = '';
   document.getElementById('historyInterfaceFilter').value = '';
   document.getElementById('historyDstInterfaceFilter').value = '';
@@ -739,8 +1076,7 @@ function historyGoToPage(page) {
 async function loadHistoryData(page = 1, silent = false) {
   currentHistoryPage = page;
   const pageSize = parseInt(document.getElementById('historyPageSize')?.value || '50', 10);
-  const querySearch = document.getElementById('historyQuerySearch')?.value.trim() || '';
-  const responseSearch = document.getElementById('historyResponseSearch')?.value.trim() || '';
+  const contentSearch = document.getElementById('historyContentSearch')?.value.trim() || '';
   const srcIp = document.getElementById('historySrcIpFilter')?.value.trim() || '';
   const srcIface = document.getElementById('historyInterfaceFilter')?.value || '';
   const dstIface = document.getElementById('historyDstInterfaceFilter')?.value || '';
@@ -754,8 +1090,7 @@ async function loadHistoryData(page = 1, silent = false) {
   }
 
   let url = `/api/history?page=${page}&limit=${pageSize}`;
-  if (querySearch) url += `&query_search=${encodeURIComponent(querySearch)}`;
-  if (responseSearch) url += `&response_search=${encodeURIComponent(responseSearch)}`;
+  if (contentSearch) url += `&content_search=${encodeURIComponent(contentSearch)}`;
   if (srcIp) url += `&src_ip=${encodeURIComponent(srcIp)}`;
   if (srcIface) url += `&src_interface=${encodeURIComponent(srcIface)}`;
   if (dstIface) url += `&dst_interface=${encodeURIComponent(dstIface)}`;
@@ -903,7 +1238,7 @@ function renderHistoryTableRows() {
       detailTr.className = 'history-detail-tr';
       const msgDispInfo = dispositionInfo(record.disposition, record.forwarded_interfaces, record.dropped_interfaces);
 
-      let questionsHtml = '<tr><td colspan="5" class="table-empty" style="padding: 12px 0 !important;">No questions in packet.</td></tr>';
+      let questionsHtml = '<tr><td colspan="6" class="table-empty" style="padding: 12px 0 !important;">No questions in packet.</td></tr>';
       if (questions.length > 0) {
         questionsHtml = questions.map(q => {
           const qDot = renderDispositionDot(q.disposition, q.forwarded_interfaces, q.dropped_interfaces, false);
@@ -924,12 +1259,24 @@ function renderHistoryTableRows() {
               <td><span class="badge-type query">${escapeHtml(qType)}</span></td>
               <td>${escapeHtml(qClass)}</td>
               <td><div style="display: flex; gap: 4px; flex-wrap: wrap;">${qRoutes}</div></td>
+              <td style="text-align: right; width: 72px;">
+                <button class="btn-quick-rule" title="Create filtering rule from this question"
+                  data-src="${escapeHtml(record.src_interface)}"
+                  data-disp="${q.disposition}"
+                  data-section="questions"
+                  data-name="${escapeHtml(q.name)}"
+                  data-rrtype="${q.rr_type}"
+                  onclick="createQuickRuleFromHistory(this, event)">
+                  <i data-lucide="plus"></i>
+                  <span>Rule</span>
+                </button>
+              </td>
             </tr>
           `;
         }).join('');
       }
 
-      let answersHtml = '<tr><td colspan="7" class="table-empty" style="padding: 12px 0 !important;">No resource records in packet.</td></tr>';
+      let answersHtml = '<tr><td colspan="8" class="table-empty" style="padding: 12px 0 !important;">No resource records in packet.</td></tr>';
       if (rrItems.length > 0) {
         answersHtml = rrItems.map(r => {
           const rDot = renderDispositionDot(r.disposition, r.forwarded_interfaces, r.dropped_interfaces, false);
@@ -962,6 +1309,18 @@ function renderHistoryTableRows() {
               <td>${escapeHtml(ttlText)}</td>
               <td>${rdataHtml}</td>
               <td><div style="display: flex; gap: 4px; flex-wrap: wrap;">${rRoutes}</div></td>
+              <td style="text-align: right; width: 72px;">
+                <button class="btn-quick-rule" title="Create filtering rule from this resource record"
+                  data-src="${escapeHtml(record.src_interface)}"
+                  data-disp="${r.disposition}"
+                  data-section="answers"
+                  data-name="${escapeHtml(r.name)}"
+                  data-rrtype="${r.rr_type}"
+                  onclick="createQuickRuleFromHistory(this, event)">
+                  <i data-lucide="plus"></i>
+                  <span>Rule</span>
+                </button>
+              </td>
             </tr>
           `;
         }).join('');
@@ -1004,6 +1363,7 @@ function renderHistoryTableRows() {
                       <th>Type</th>
                       <th>Class</th>
                       <th>Routing</th>
+                      <th style="width: 72px; text-align: right;">Action</th>
                     </tr>
                   </thead>
                   <tbody>${questionsHtml}</tbody>
@@ -1025,6 +1385,7 @@ function renderHistoryTableRows() {
                       <th>TTL</th>
                       <th>Decoded Data</th>
                       <th>Routing</th>
+                      <th style="width: 72px; text-align: right;">Action</th>
                     </tr>
                   </thead>
                   <tbody>${answersHtml}</tbody>
@@ -1040,3 +1401,1327 @@ function renderHistoryTableRows() {
 
   lucide.createIcons();
 }
+
+/* ==========================================================================
+   Configuration Manager & Visual Rule Builder
+   ========================================================================== */
+let configInitialized = false;
+let savedConfigData = null;
+let draftConfigData = null;
+let lastServerYaml = '';
+let configFilePath = '/etc/mdns-sieve.yaml';
+let detectedSystemInterfaces = [];
+let serverRestartRequired = false;
+let boundWebServer = null;
+let highlightedRuleIndex = null;
+let draggedRuleIndex = null;
+
+function defaultConfigTemplate() {
+  return {
+    interfaces: [],
+    default_action: 'forward',
+    rewrite_mixed_packets: false,
+    forward_known_answers: false,
+    web_server: {
+      enabled: true,
+      host: '0.0.0.0',
+      port: 8080,
+    },
+    tracking: {
+      enabled: true,
+      max_records: 50000,
+      db_path: '/var/lib/mdns-sieve/responses.db',
+      flush_interval_seconds: 3600,
+      retention_days: 7,
+    },
+    rules: [],
+    ssdp: {
+      enabled: false,
+      interfaces: [],
+      default_action: 'forward',
+      rules: [],
+    },
+  };
+}
+
+function normalizeConfigData(raw) {
+  const base = defaultConfigTemplate();
+  if (!raw || typeof raw !== 'object') return base;
+
+  const interfaces = Array.isArray(raw.interfaces)
+    ? raw.interfaces.map(s => String(s).trim()).filter(Boolean)
+    : [];
+
+  const default_action = String(raw.default_action || 'forward').toLowerCase() === 'drop' ? 'drop' : 'forward';
+  const rewrite_mixed_packets = Boolean(raw.rewrite_mixed_packets);
+  const forward_known_answers = Boolean(raw.forward_known_answers);
+
+  const ws = raw.web_server || {};
+  const web_server = {
+    enabled: true,
+    host: String(ws.host || '0.0.0.0').trim() || '0.0.0.0',
+    port: Number(ws.port) > 0 ? Number(ws.port) : 8080,
+  };
+
+  const tr = raw.tracking || {};
+  const retention = tr.retention_days !== undefined && tr.retention_days !== null
+    ? Number(tr.retention_days)
+    : (tr.history_retention_days !== undefined && tr.history_retention_days !== null ? Number(tr.history_retention_days) : 7);
+  const maxRecs = tr.max_records !== undefined && tr.max_records !== null
+    ? Number(tr.max_records)
+    : (tr.max_history_records !== undefined && tr.max_history_records !== null ? Number(tr.max_history_records) : 50000);
+
+  const tracking = {
+    enabled: tr.enabled !== undefined ? Boolean(tr.enabled) : true,
+    max_records: !isNaN(maxRecs) && maxRecs >= 0 ? maxRecs : 50000,
+    db_path: String(tr.db_path || '/var/lib/mdns-sieve/responses.db').trim() || '/var/lib/mdns-sieve/responses.db',
+    flush_interval_seconds: Number(tr.flush_interval_seconds) > 0 ? Number(tr.flush_interval_seconds) : 3600,
+    retention_days: !isNaN(retention) && retention > 0 ? retention : 7,
+  };
+
+  const rules = Array.isArray(raw.rules)
+    ? raw.rules.map(normalizeRuleItem)
+    : [];
+
+  const rawSsdp = raw.ssdp || {};
+  const ssdp = {
+    enabled: Boolean(rawSsdp.enabled),
+    interfaces: Array.isArray(rawSsdp.interfaces)
+      ? rawSsdp.interfaces.map(s => String(s).trim()).filter(Boolean)
+      : [],
+    default_action: String(rawSsdp.default_action || 'forward').toLowerCase() === 'drop' ? 'drop' : 'forward',
+    rules: Array.isArray(rawSsdp.rules)
+      ? rawSsdp.rules.map(r => ({
+          action: String((r && r.action) || 'allow').toLowerCase() === 'deny' ? 'deny' : 'allow',
+          method: r && r.method ? String(r.method).trim().toUpperCase() : null,
+          from: Array.isArray(r && r.from) ? r.from.map(s => String(s).trim()).filter(Boolean) : null,
+          to: Array.isArray(r && r.to) ? r.to.map(s => String(s).trim()).filter(Boolean) : null,
+          st: r && r.st ? String(r.st).trim() : null,
+          usn: r && r.usn ? String(r.usn).trim() : null,
+        }))
+      : [],
+  };
+
+  return {
+    interfaces,
+    default_action,
+    rewrite_mixed_packets,
+    forward_known_answers,
+    web_server,
+    tracking,
+    rules,
+    ssdp,
+  };
+}
+
+function normalizeEndpointList(val) {
+  if (!val) return ['*'];
+  if (Array.isArray(val)) {
+    const cleaned = val.map(v => String(v).trim()).filter(Boolean);
+    if (cleaned.length === 0 || cleaned.includes('*')) return ['*'];
+    return Array.from(new Set(cleaned));
+  }
+  const s = String(val).trim();
+  if (!s || s === '*') return ['*'];
+  return [s];
+}
+
+function serializeEndpointValue(list) {
+  const arr = normalizeEndpointList(list);
+  if (arr.length === 1) return arr[0];
+  return arr;
+}
+
+function normalizeRuleItem(r) {
+  if (!r || typeof r !== 'object') {
+    return {
+      action: 'forward',
+      section: 'any',
+      src: '*',
+      dst: '*',
+      services: [],
+      hosts: [],
+    };
+  }
+  const action = String(r.action || 'forward').toLowerCase() === 'drop' ? 'drop' : 'forward';
+  const rawSec = String(r.section || 'any').toLowerCase();
+  const section = (rawSec === 'questions' || rawSec === 'answers') ? rawSec : 'any';
+  const services = Array.isArray(r.services) ? r.services.map(s => String(s).trim()).filter(Boolean) : [];
+  const hosts = Array.isArray(r.hosts) ? r.hosts.map(s => String(s).trim()).filter(Boolean) : [];
+  const src = serializeEndpointValue(r.src);
+  const dst = serializeEndpointValue(r.dst);
+
+  return {
+    action,
+    section,
+    src,
+    dst,
+    services,
+    hosts,
+  };
+}
+
+function cloneConfig(cfg) {
+  return normalizeConfigData(JSON.parse(JSON.stringify(cfg)));
+}
+
+function isConfigDirty() {
+  if (!savedConfigData || !draftConfigData) return false;
+  return JSON.stringify(savedConfigData) !== JSON.stringify(draftConfigData);
+}
+
+async function ensureConfigViewInitialized() {
+  if (!configInitialized) {
+    configInitialized = true;
+    await Promise.all([loadConfigFromServer(), loadSystemInterfaces()]);
+  } else {
+    loadSystemInterfaces();
+    renderConfigView();
+  }
+}
+
+async function loadConfigFromServer() {
+  try {
+    const res = await fetch('/api/config');
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const payload = await res.json();
+    if (payload.status !== 'ok' || !payload.data) {
+      throw new Error(payload.error || 'Failed to load configuration');
+    }
+
+    const data = payload.data;
+    savedConfigData = normalizeConfigData(data.config);
+    draftConfigData = cloneConfig(savedConfigData);
+    lastServerYaml = data.yaml || '';
+    configFilePath = data.config_path || '/etc/mdns-sieve.yaml';
+    serverRestartRequired = Boolean(data.restart_required);
+    boundWebServer = data.bound_web_server || null;
+
+    renderConfigView();
+  } catch (err) {
+    console.error('Failed to load config from server:', err);
+    if (!savedConfigData) {
+      savedConfigData = defaultConfigTemplate();
+      draftConfigData = cloneConfig(savedConfigData);
+    }
+    showConfigFeedback('error', `Failed to load configuration: ${err.message}`);
+    renderConfigView();
+  }
+}
+
+async function loadSystemInterfaces() {
+  try {
+    const res = await fetch('/api/interfaces');
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const payload = await res.json();
+    if (payload.status === 'ok' && payload.data) {
+      detectedSystemInterfaces = Array.isArray(payload.data.detected) ? payload.data.detected : [];
+      renderInterfacesSection();
+      renderRulesList();
+      lucide.createIcons();
+    }
+  } catch (err) {
+    console.error('Failed to scan system interfaces:', err);
+  }
+}
+
+function updateDirtyStateUI() {
+  const dirty = isConfigDirty();
+  const navBadge = document.getElementById('configDirtyBadge');
+  const stateBadge = document.getElementById('configStateBadge');
+  const stateText = document.getElementById('configStateText');
+  const btnDiscard = document.getElementById('btnDiscardConfig');
+  const btnSave = document.getElementById('btnSaveConfig');
+  const pathEl = document.getElementById('configFilePath');
+  const restartBanner = document.getElementById('configRestartBanner');
+
+  if (pathEl) pathEl.textContent = configFilePath;
+
+  if (navBadge) {
+    navBadge.classList.toggle('hidden', !dirty);
+  }
+
+  if (stateBadge && stateText) {
+    if (dirty) {
+      stateBadge.className = 'config-state-badge dirty';
+      stateText.textContent = 'Unsaved configuration changes';
+    } else {
+      stateBadge.className = 'config-state-badge saved';
+      stateText.textContent = 'All changes saved & active';
+    }
+  }
+
+  if (btnDiscard) btnDiscard.disabled = !dirty;
+  if (btnSave) btnSave.disabled = !dirty;
+
+  if (restartBanner) {
+    restartBanner.classList.toggle('hidden', !serverRestartRequired);
+  }
+}
+
+function renderConfigView() {
+  if (!draftConfigData) return;
+
+  updateDirtyStateUI();
+  renderInterfacesSection();
+  renderGlobalPolicySection();
+  renderRulesList();
+  renderTrackingAndWebSection();
+  renderSsdpConfigSection();
+  lucide.createIcons();
+}
+
+function renderSsdpConfigSection() {
+  if (!draftConfigData) return;
+  const ssdp = draftConfigData.ssdp || { enabled: false, interfaces: [], default_action: 'forward', rules: [] };
+  const enabledEl = document.getElementById('cfgSsdpEnabled');
+  const defaultActionEl = document.getElementById('cfgSsdpDefaultAction');
+  const ifacesEl = document.getElementById('cfgSsdpInterfacesContainer');
+  const rulesEl = document.getElementById('cfgSsdpRulesContainer');
+
+  if (enabledEl) enabledEl.checked = Boolean(ssdp.enabled);
+  if (defaultActionEl) defaultActionEl.value = ssdp.default_action || 'forward';
+
+  if (ifacesEl) {
+    const activeSet = new Set(ssdp.interfaces || []);
+    const allIfaces = allKnownInterfaceNames();
+    if (allIfaces.length === 0) {
+      ifacesEl.innerHTML = '<span class="help-text">No interfaces detected.</span>';
+    } else {
+      ifacesEl.innerHTML = allIfaces.map(name => {
+        const isSelected = activeSet.has(name);
+        const iconName = isSelected ? 'check-square' : 'square';
+        return `
+          <div class="iface-chip ${isSelected ? 'selected' : ''}" onclick="toggleSsdpInterface('${escapeHtml(name)}')">
+            <i data-lucide="${iconName}"></i>
+            <span>${escapeHtml(name)}</span>
+          </div>
+        `;
+      }).join('');
+    }
+  }
+
+  if (rulesEl) {
+    const rules = ssdp.rules || [];
+    if (rules.length === 0) {
+      rulesEl.innerHTML = '<p class="help-text">No SSDP rules configured. The SSDP default action applies to all packets.</p>';
+    } else {
+      rulesEl.innerHTML = rules.map((r, idx) => `
+        <div class="rule-card" style="margin-bottom: 8px; padding: 10px;">
+          <div class="config-form-grid">
+            <div class="form-group">
+              <label>Action</label>
+              <select class="config-input" onchange="updateSsdpRule(${idx}, 'action', this.value)">
+                <option value="allow" ${r.action === 'allow' ? 'selected' : ''}>Allow</option>
+                <option value="deny" ${r.action === 'deny' ? 'selected' : ''}>Deny</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label>Method</label>
+              <select class="config-input" onchange="updateSsdpRule(${idx}, 'method', this.value)">
+                <option value="" ${!r.method ? 'selected' : ''}>Any (*)</option>
+                <option value="M-SEARCH" ${r.method === 'M-SEARCH' ? 'selected' : ''}>M-SEARCH</option>
+                <option value="NOTIFY" ${r.method === 'NOTIFY' ? 'selected' : ''}>NOTIFY</option>
+                <option value="RESPONSE" ${r.method === 'RESPONSE' ? 'selected' : ''}>RESPONSE (200 OK)</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label>From Interfaces (comma-sep)</label>
+              <input type="text" class="config-input" placeholder="* or eth0,wlan0" value="${escapeHtml((r.from || []).join(','))}" oninput="updateSsdpRule(${idx}, 'from', this.value)">
+            </div>
+            <div class="form-group">
+              <label>To Interfaces (comma-sep)</label>
+              <input type="text" class="config-input" placeholder="* or eth0,wlan0" value="${escapeHtml((r.to || []).join(','))}" oninput="updateSsdpRule(${idx}, 'to', this.value)">
+            </div>
+            <div class="form-group">
+              <label>ST / NT Pattern</label>
+              <input type="text" class="config-input" placeholder="e.g. urn:schemas-upnp-org:*" value="${escapeHtml(r.st || '')}" oninput="updateSsdpRule(${idx}, 'st', this.value)">
+            </div>
+            <div class="form-group">
+              <label>USN Pattern</label>
+              <input type="text" class="config-input" placeholder="e.g. uuid:*" value="${escapeHtml(r.usn || '')}" oninput="updateSsdpRule(${idx}, 'usn', this.value)">
+            </div>
+          </div>
+          <div style="margin-top: 8px; text-align: right;">
+            <button type="button" class="btn btn-secondary" onclick="deleteSsdpRule(${idx})">
+              <i data-lucide="trash-2"></i>
+              <span>Delete Rule</span>
+            </button>
+          </div>
+        </div>
+      `).join('');
+    }
+  }
+}
+
+function onSsdpConfigChange() {
+  if (!draftConfigData) return;
+  if (!draftConfigData.ssdp) draftConfigData.ssdp = { enabled: false, interfaces: [], default_action: 'forward', rules: [] };
+  const enabledEl = document.getElementById('cfgSsdpEnabled');
+  const defaultActionEl = document.getElementById('cfgSsdpDefaultAction');
+  if (enabledEl) draftConfigData.ssdp.enabled = enabledEl.checked;
+  if (defaultActionEl) draftConfigData.ssdp.default_action = defaultActionEl.value;
+  updateDirtyStateUI();
+}
+
+function toggleSsdpInterface(name) {
+  if (!draftConfigData) return;
+  if (!draftConfigData.ssdp) draftConfigData.ssdp = { enabled: false, interfaces: [], default_action: 'forward', rules: [] };
+  const list = draftConfigData.ssdp.interfaces || [];
+  const idx = list.indexOf(name);
+  if (idx >= 0) {
+    list.splice(idx, 1);
+  } else {
+    list.push(name);
+  }
+  draftConfigData.ssdp.interfaces = list;
+  renderSsdpConfigSection();
+  updateDirtyStateUI();
+  lucide.createIcons();
+}
+
+function addSsdpRule() {
+  if (!draftConfigData) return;
+  if (!draftConfigData.ssdp) draftConfigData.ssdp = { enabled: false, interfaces: [], default_action: 'forward', rules: [] };
+  draftConfigData.ssdp.rules.push({
+    action: 'allow',
+    method: null,
+    from: null,
+    to: null,
+    st: null,
+    usn: null,
+  });
+  renderSsdpConfigSection();
+  updateDirtyStateUI();
+  lucide.createIcons();
+}
+
+function deleteSsdpRule(idx) {
+  if (!draftConfigData || !draftConfigData.ssdp) return;
+  draftConfigData.ssdp.rules.splice(idx, 1);
+  renderSsdpConfigSection();
+  updateDirtyStateUI();
+  lucide.createIcons();
+}
+
+function updateSsdpRule(idx, field, val) {
+  if (!draftConfigData || !draftConfigData.ssdp || !draftConfigData.ssdp.rules[idx]) return;
+  const rule = draftConfigData.ssdp.rules[idx];
+  if (field === 'from' || field === 'to') {
+    const arr = String(val).split(',').map(s => s.trim()).filter(Boolean);
+    rule[field] = arr.length > 0 ? arr : null;
+  } else if (field === 'method' || field === 'st' || field === 'usn') {
+    const trimmed = String(val).trim();
+    rule[field] = trimmed.length > 0 ? trimmed : null;
+  } else {
+    rule[field] = val;
+  }
+  updateDirtyStateUI();
+}
+
+function allKnownInterfaceNames() {
+  const names = new Set();
+  detectedSystemInterfaces.forEach(item => {
+    if (item && item.name) names.add(item.name);
+  });
+  if (draftConfigData && Array.isArray(draftConfigData.interfaces)) {
+    draftConfigData.interfaces.forEach(iface => names.add(iface));
+  }
+  if (draftConfigData && draftConfigData.ssdp && Array.isArray(draftConfigData.ssdp.interfaces)) {
+    draftConfigData.ssdp.interfaces.forEach(iface => names.add(iface));
+  }
+  return Array.from(names);
+}
+
+function renderInterfacesSection() {
+  if (!draftConfigData) return;
+  const detectedWrap = document.getElementById('detectedInterfacesContainer');
+  const activeWrap = document.getElementById('activeInterfacesContainer');
+  const activeSet = new Set(draftConfigData.interfaces);
+
+  if (detectedWrap) {
+    if (detectedSystemInterfaces.length === 0) {
+      detectedWrap.innerHTML = '<span class="help-text">No physical/virtual network interfaces detected in /sys/class/net. Use the custom input below.</span>';
+    } else {
+      detectedWrap.innerHTML = detectedSystemInterfaces.map(iface => {
+        const isSelected = activeSet.has(iface.name);
+        const oper = String(iface.operstate || 'unknown').toLowerCase();
+        const isUp = oper === 'up' || oper === 'unknown';
+        const badgeClass = isUp ? 'up' : 'down';
+        const badgeLabel = oper === 'up' ? 'UP' : (oper === 'down' ? 'DOWN' : oper.toUpperCase());
+        const iconName = isSelected ? 'check-square' : 'square';
+        return `
+          <div class="iface-chip ${isSelected ? 'selected' : ''}" onclick="toggleInterfaceSelection('${escapeHtml(iface.name)}')" title="Click to ${isSelected ? 'remove' : 'add'} ${escapeHtml(iface.name)}">
+            <i data-lucide="${iconName}"></i>
+            <span>${escapeHtml(iface.name)}</span>
+            <span class="iface-oper-badge ${badgeClass}">${escapeHtml(badgeLabel)}</span>
+          </div>
+        `;
+      }).join('');
+    }
+  }
+
+  if (activeWrap) {
+    if (draftConfigData.interfaces.length === 0) {
+      activeWrap.innerHTML = '<span class="help-text" style="color: var(--color-warning);">No interfaces selected. Select at least two interfaces to reflect mDNS packets between networks.</span>';
+    } else {
+      activeWrap.innerHTML = draftConfigData.interfaces.map(name => `
+        <span class="iface-active-pill">
+          <i data-lucide="network" style="width: 13px; height: 13px; color: var(--color-primary);"></i>
+          <span>${escapeHtml(name)}</span>
+          <button type="button" onclick="removeConfiguredInterface('${escapeHtml(name)}')" title="Remove ${escapeHtml(name)}">
+            <i data-lucide="x"></i>
+          </button>
+        </span>
+      `).join('');
+    }
+  }
+}
+
+function toggleInterfaceSelection(ifaceName) {
+  if (!draftConfigData) return;
+  const idx = draftConfigData.interfaces.indexOf(ifaceName);
+  if (idx >= 0) {
+    draftConfigData.interfaces.splice(idx, 1);
+  } else {
+    draftConfigData.interfaces.push(ifaceName);
+  }
+  updateDirtyStateUI();
+  renderInterfacesSection();
+  renderRulesList();
+  lucide.createIcons();
+}
+
+function removeConfiguredInterface(ifaceName) {
+  if (!draftConfigData) return;
+  draftConfigData.interfaces = draftConfigData.interfaces.filter(i => i !== ifaceName);
+  updateDirtyStateUI();
+  renderInterfacesSection();
+  renderRulesList();
+  lucide.createIcons();
+}
+
+function addCustomInterface() {
+  if (!draftConfigData) return;
+  const input = document.getElementById('customInterfaceInput');
+  if (!input) return;
+  const raw = input.value.trim();
+  if (!raw) return;
+
+  if (/\s|\/|\\/.test(raw)) {
+    showConfigFeedback('error', `Invalid interface name "${raw}": cannot contain whitespace or slashes.`);
+    return;
+  }
+
+  if (!draftConfigData.interfaces.includes(raw)) {
+    draftConfigData.interfaces.push(raw);
+  }
+  input.value = '';
+  updateDirtyStateUI();
+  renderInterfacesSection();
+  renderRulesList();
+  lucide.createIcons();
+}
+
+function renderGlobalPolicySection() {
+  if (!draftConfigData) return;
+  const btnFwd = document.getElementById('btnDefaultForward');
+  const btnDrop = document.getElementById('btnDefaultDrop');
+  const chkRewrite = document.getElementById('cfgRewriteMixed');
+  const chkKnown = document.getElementById('cfgForwardKnownAnswers');
+
+  const isFwd = draftConfigData.default_action !== 'drop';
+  if (btnFwd) btnFwd.classList.toggle('active', isFwd);
+  if (btnDrop) btnDrop.classList.toggle('active', !isFwd);
+  if (chkRewrite) chkRewrite.checked = Boolean(draftConfigData.rewrite_mixed_packets);
+  if (chkKnown) chkKnown.checked = Boolean(draftConfigData.forward_known_answers);
+}
+
+function setConfigDefaultAction(action) {
+  if (!draftConfigData) return;
+  draftConfigData.default_action = action === 'drop' ? 'drop' : 'forward';
+  updateDirtyStateUI();
+  renderGlobalPolicySection();
+}
+
+function onGlobalPolicyChange() {
+  if (!draftConfigData) return;
+  const chkRewrite = document.getElementById('cfgRewriteMixed');
+  const chkKnown = document.getElementById('cfgForwardKnownAnswers');
+  if (chkRewrite) draftConfigData.rewrite_mixed_packets = Boolean(chkRewrite.checked);
+  if (chkKnown) draftConfigData.forward_known_answers = Boolean(chkKnown.checked);
+  updateDirtyStateUI();
+}
+
+function renderTrackingAndWebSection() {
+  if (!draftConfigData) return;
+  const tr = draftConfigData.tracking || {};
+  const ws = draftConfigData.web_server || {};
+
+  const chkEnabled = document.getElementById('cfgTrackingEnabled');
+  const fieldsWrap = document.getElementById('cfgTrackingFieldsWrap');
+  const inpRetention = document.getElementById('cfgTrackingRetention');
+  const inpMaxRecords = document.getElementById('cfgTrackingMaxRecords');
+  const inpFlush = document.getElementById('cfgTrackingFlushInterval');
+  const inpDbPath = document.getElementById('cfgTrackingDbPath');
+
+  if (chkEnabled) chkEnabled.checked = Boolean(tr.enabled);
+  if (fieldsWrap) {
+    fieldsWrap.style.opacity = tr.enabled ? '1' : '0.5';
+  }
+  if (inpRetention) inpRetention.value = tr.retention_days ?? 7;
+  if (inpMaxRecords) inpMaxRecords.value = tr.max_records ?? 50000;
+  if (inpFlush) inpFlush.value = tr.flush_interval_seconds ?? 3600;
+  if (inpDbPath) inpDbPath.value = tr.db_path || '/var/lib/mdns-sieve/responses.db';
+
+  const inpHost = document.getElementById('cfgWebHost');
+  const inpPort = document.getElementById('cfgWebPort');
+  if (inpHost) inpHost.value = ws.host || '0.0.0.0';
+  if (inpPort) inpPort.value = ws.port || 8080;
+}
+
+function onTrackingConfigChange() {
+  if (!draftConfigData) return;
+  const chkEnabled = document.getElementById('cfgTrackingEnabled');
+  const fieldsWrap = document.getElementById('cfgTrackingFieldsWrap');
+  const inpRetention = document.getElementById('cfgTrackingRetention');
+  const inpMaxRecords = document.getElementById('cfgTrackingMaxRecords');
+  const inpFlush = document.getElementById('cfgTrackingFlushInterval');
+  const inpDbPath = document.getElementById('cfgTrackingDbPath');
+
+  const enabled = chkEnabled ? Boolean(chkEnabled.checked) : true;
+  if (fieldsWrap) {
+    fieldsWrap.style.opacity = enabled ? '1' : '0.5';
+  }
+
+  const retention = Math.max(1, parseInt(inpRetention ? inpRetention.value : '7', 10) || 7);
+  const maxRecords = Math.max(0, parseInt(inpMaxRecords ? inpMaxRecords.value : '50000', 10) || 0);
+  const flushSecs = Math.max(1, parseInt(inpFlush ? inpFlush.value : '3600', 10) || 3600);
+  const dbPath = (inpDbPath ? inpDbPath.value.trim() : '') || '/var/lib/mdns-sieve/responses.db';
+
+  draftConfigData.tracking = {
+    enabled,
+    max_records: maxRecords,
+    db_path: dbPath,
+    flush_interval_seconds: flushSecs,
+    retention_days: retention,
+  };
+  updateDirtyStateUI();
+}
+
+function onWebServerConfigChange() {
+  if (!draftConfigData) return;
+  const inpHost = document.getElementById('cfgWebHost');
+  const inpPort = document.getElementById('cfgWebPort');
+  const host = (inpHost ? inpHost.value.trim() : '') || '0.0.0.0';
+  const port = Math.min(65535, Math.max(1, parseInt(inpPort ? inpPort.value : '8080', 10) || 8080));
+
+  draftConfigData.web_server = {
+    enabled: true,
+    host,
+    port,
+  };
+  updateDirtyStateUI();
+}
+
+function renderRulesList() {
+  if (!draftConfigData) return;
+  const listEl = document.getElementById('configRulesList');
+  const countBadge = document.getElementById('configRulesCountBadge');
+  if (!listEl) return;
+
+  const rules = draftConfigData.rules || [];
+  if (countBadge) {
+    countBadge.textContent = `${rules.length} ${rules.length === 1 ? 'rule' : 'rules'}`;
+  }
+
+  if (rules.length === 0) {
+    listEl.innerHTML = `
+      <div class="table-empty" style="padding: 36px 20px !important; border: 1px dashed var(--border-color); border-radius: 12px;">
+        <p style="margin-bottom: 10px; font-weight: 600; color: var(--text-primary);">No filtering rules configured</p>
+        <p style="font-size: 13px; color: var(--text-secondary); margin-bottom: 16px;">
+          All mDNS traffic between configured interfaces will use the global default action (<strong>${escapeHtml(draftConfigData.default_action.toUpperCase())}</strong>).
+        </p>
+        <button onclick="addConfigRule()" class="btn btn-primary" style="margin: 0 auto;">
+          <i data-lucide="plus"></i>
+          <span>Create First Rule</span>
+        </button>
+      </div>
+    `;
+    return;
+  }
+
+  const candidateIfaces = allKnownInterfaceNames();
+
+  listEl.innerHTML = rules.map((rule, idx) => {
+    const isFwd = rule.action !== 'drop';
+    const srcList = normalizeEndpointList(rule.src);
+    const dstList = normalizeEndpointList(rule.dst);
+
+    // Include any rule-specific custom interfaces so they remain visible as pills
+    const srcCandidates = Array.from(new Set([...candidateIfaces, ...srcList.filter(i => i !== '*')]));
+    const dstCandidates = Array.from(new Set([...candidateIfaces, ...dstList.filter(i => i !== '*')]));
+
+    const srcPillsHtml = [
+      `<span class="rule-iface-pill ${srcList.includes('*') ? 'active' : ''}" onclick="toggleRuleInterface(${idx}, 'src', '*')">* (Any)</span>`,
+      ...srcCandidates.map(iface => `
+        <span class="rule-iface-pill ${!srcList.includes('*') && srcList.includes(iface) ? 'active' : ''}" onclick="toggleRuleInterface(${idx}, 'src', '${escapeHtml(iface)}')">${escapeHtml(iface)}</span>
+      `),
+    ].join('');
+
+    const dstPillsHtml = [
+      `<span class="rule-iface-pill ${dstList.includes('*') ? 'active' : ''}" onclick="toggleRuleInterface(${idx}, 'dst', '*')">* (Any)</span>`,
+      ...dstCandidates.map(iface => `
+        <span class="rule-iface-pill ${!dstList.includes('*') && dstList.includes(iface) ? 'active' : ''}" onclick="toggleRuleInterface(${idx}, 'dst', '${escapeHtml(iface)}')">${escapeHtml(iface)}</span>
+      `),
+    ].join('');
+
+    const serviceTagsHtml = (rule.services || []).map((svc, tIdx) => `
+      <span class="pattern-tag">
+        <span>${escapeHtml(svc)}</span>
+        <button type="button" onclick="removeRulePatternTag(${idx}, 'services', ${tIdx})" title="Remove pattern">&times;</button>
+      </span>
+    `).join('');
+
+    const hostTagsHtml = (rule.hosts || []).map((host, tIdx) => `
+      <span class="pattern-tag">
+        <span>${escapeHtml(host)}</span>
+        <button type="button" onclick="removeRulePatternTag(${idx}, 'hosts', ${tIdx})" title="Remove pattern">&times;</button>
+      </span>
+    `).join('');
+
+    const highlightClass = highlightedRuleIndex === idx ? 'highlight-new' : '';
+
+    return `
+      <div class="rule-card ${isFwd ? 'rule-forward' : 'rule-drop'} ${highlightClass}"
+           id="configRuleCard_${idx}"
+           draggable="true"
+           ondragstart="onRuleDragStart(event, ${idx})"
+           ondragover="onRuleDragOver(event, ${idx})"
+           ondragleave="onRuleDragLeave(event, ${idx})"
+           ondrop="onRuleDrop(event, ${idx})"
+           ondragend="onRuleDragEnd(event)">
+        <div class="rule-card-top">
+          <div class="rule-top-left">
+            <span class="rule-drag-handle" title="Drag to reorder rule">
+              <i data-lucide="grip-vertical"></i>
+            </span>
+            <span class="rule-index-badge">Rule #${idx + 1}</span>
+            <div class="rule-action-pill-group">
+              <button type="button" class="rule-action-opt forward ${isFwd ? 'active' : ''}" onclick="setRuleAction(${idx}, 'forward')">Forward</button>
+              <button type="button" class="rule-action-opt drop ${!isFwd ? 'active' : ''}" onclick="setRuleAction(${idx}, 'drop')">Drop</button>
+            </div>
+            <div style="display: inline-flex; align-items: center; gap: 6px;">
+              <span class="rule-field-label" style="margin: 0;">Section:</span>
+              <select class="filter-select select-sm" style="width: auto; min-width: 135px;" onchange="setRuleSection(${idx}, this.value)">
+                <option value="any" ${rule.section === 'any' ? 'selected' : ''}>Any (All Records)</option>
+                <option value="questions" ${rule.section === 'questions' ? 'selected' : ''}>Questions Only</option>
+                <option value="answers" ${rule.section === 'answers' ? 'selected' : ''}>Answers Only</option>
+              </select>
+            </div>
+          </div>
+          <div class="rule-top-right">
+            <button type="button" class="btn btn-icon btn-sm" onclick="moveConfigRule(${idx}, -1)" ${idx === 0 ? 'disabled' : ''} title="Move Rule Up">
+              <i data-lucide="arrow-up"></i>
+            </button>
+            <button type="button" class="btn btn-icon btn-sm" onclick="moveConfigRule(${idx}, 1)" ${idx === rules.length - 1 ? 'disabled' : ''} title="Move Rule Down">
+              <i data-lucide="arrow-down"></i>
+            </button>
+            <button type="button" class="btn btn-icon btn-sm" onclick="duplicateConfigRule(${idx})" title="Duplicate Rule">
+              <i data-lucide="copy"></i>
+            </button>
+            <button type="button" class="btn btn-icon btn-sm" style="color: var(--color-red);" onclick="deleteConfigRule(${idx})" title="Delete Rule">
+              <i data-lucide="trash-2"></i>
+            </button>
+          </div>
+        </div>
+
+        <div class="rule-body-grid">
+          <div class="rule-field-group">
+            <label class="rule-field-label">
+              <i data-lucide="log-in" style="width: 13px; height: 13px;"></i>
+              <span>Ingress Source Interface (src)</span>
+            </label>
+            <div class="rule-iface-selector">${srcPillsHtml}</div>
+          </div>
+
+          <div class="rule-field-group">
+            <label class="rule-field-label">
+              <i data-lucide="log-out" style="width: 13px; height: 13px;"></i>
+              <span>Egress Destination Interface (dst)</span>
+            </label>
+            <div class="rule-iface-selector">${dstPillsHtml}</div>
+          </div>
+
+          <div class="rule-field-group">
+            <label class="rule-field-label">
+              <i data-lucide="radio" style="width: 13px; height: 13px;"></i>
+              <span>Service Patterns (PTR / SRV / TXT / NSEC — wildcards supported)</span>
+            </label>
+            <div class="tag-editor-box" onclick="this.querySelector('input').focus()">
+              ${serviceTagsHtml}
+              <input type="text" class="tag-inline-input"
+                     placeholder="${(rule.services || []).length === 0 ? 'e.g. *.local, *_googlecast._tcp.local (Enter to add)' : 'Add pattern...'}"
+                     onkeydown="handleRuleTagInputKeydown(event, ${idx}, 'services')"
+                     onblur="handleRuleTagInputBlur(this, ${idx}, 'services')">
+            </div>
+          </div>
+
+          <div class="rule-field-group">
+            <label class="rule-field-label">
+              <i data-lucide="server" style="width: 13px; height: 13px;"></i>
+              <span>Host Patterns (A / AAAA records — wildcards supported)</span>
+            </label>
+            <div class="tag-editor-box" onclick="this.querySelector('input').focus()">
+              ${hostTagsHtml}
+              <input type="text" class="tag-inline-input"
+                     placeholder="${(rule.hosts || []).length === 0 ? 'e.g. printer.local, *.iot.local (Enter to add)' : 'Add host...'}"
+                     onkeydown="handleRuleTagInputKeydown(event, ${idx}, 'hosts')"
+                     onblur="handleRuleTagInputBlur(this, ${idx}, 'hosts')">
+            </div>
+          </div>
+        </div>
+      </div>
+    `;
+  }).join('');
+}
+
+function addConfigRule(initialRule = null, insertAtTop = false) {
+  if (!draftConfigData) return;
+  const newRule = normalizeRuleItem(initialRule || {
+    action: draftConfigData.default_action === 'forward' ? 'drop' : 'forward',
+    section: 'any',
+    src: '*',
+    dst: '*',
+    services: ['*.local'],
+    hosts: [],
+  });
+
+  if (insertAtTop) {
+    draftConfigData.rules.unshift(newRule);
+    highlightedRuleIndex = 0;
+  } else {
+    draftConfigData.rules.push(newRule);
+    highlightedRuleIndex = draftConfigData.rules.length - 1;
+  }
+
+  updateDirtyStateUI();
+  renderRulesList();
+  lucide.createIcons();
+
+  setTimeout(() => {
+    highlightedRuleIndex = null;
+  }, 2400);
+}
+
+function duplicateConfigRule(idx) {
+  if (!draftConfigData || !draftConfigData.rules[idx]) return;
+  const copy = normalizeRuleItem(JSON.parse(JSON.stringify(draftConfigData.rules[idx])));
+  draftConfigData.rules.splice(idx + 1, 0, copy);
+  highlightedRuleIndex = idx + 1;
+  updateDirtyStateUI();
+  renderRulesList();
+  lucide.createIcons();
+  setTimeout(() => { highlightedRuleIndex = null; }, 2400);
+}
+
+function deleteConfigRule(idx) {
+  if (!draftConfigData || !draftConfigData.rules[idx]) return;
+  draftConfigData.rules.splice(idx, 1);
+  updateDirtyStateUI();
+  renderRulesList();
+  lucide.createIcons();
+}
+
+function moveConfigRule(idx, delta) {
+  if (!draftConfigData) return;
+  const target = idx + delta;
+  if (target < 0 || target >= draftConfigData.rules.length) return;
+  const [item] = draftConfigData.rules.splice(idx, 1);
+  draftConfigData.rules.splice(target, 0, item);
+  highlightedRuleIndex = target;
+  updateDirtyStateUI();
+  renderRulesList();
+  lucide.createIcons();
+  setTimeout(() => { highlightedRuleIndex = null; }, 1500);
+}
+
+function setRuleAction(idx, action) {
+  if (!draftConfigData || !draftConfigData.rules[idx]) return;
+  draftConfigData.rules[idx].action = action === 'drop' ? 'drop' : 'forward';
+  updateDirtyStateUI();
+  renderRulesList();
+  lucide.createIcons();
+}
+
+function setRuleSection(idx, section) {
+  if (!draftConfigData || !draftConfigData.rules[idx]) return;
+  draftConfigData.rules[idx].section = (section === 'questions' || section === 'answers') ? section : 'any';
+  updateDirtyStateUI();
+}
+
+function toggleRuleInterface(idx, field, iface) {
+  if (!draftConfigData || !draftConfigData.rules[idx]) return;
+  const rule = draftConfigData.rules[idx];
+  let list = normalizeEndpointList(rule[field]);
+
+  if (iface === '*') {
+    list = ['*'];
+  } else {
+    list = list.filter(item => item !== '*');
+    const pos = list.indexOf(iface);
+    if (pos >= 0) {
+      list.splice(pos, 1);
+    } else {
+      list.push(iface);
+    }
+    if (list.length === 0) {
+      list = ['*'];
+    }
+  }
+
+  rule[field] = serializeEndpointValue(list);
+  updateDirtyStateUI();
+  renderRulesList();
+  lucide.createIcons();
+}
+
+function addRulePatternTag(idx, field, rawVal) {
+  if (!draftConfigData || !draftConfigData.rules[idx]) return false;
+  const parts = String(rawVal)
+    .split(',')
+    .map(s => s.trim())
+    .filter(Boolean);
+  if (parts.length === 0) return false;
+
+  const arr = draftConfigData.rules[idx][field] || [];
+  let changed = false;
+  parts.forEach(p => {
+    if (!arr.includes(p)) {
+      arr.push(p);
+      changed = true;
+    }
+  });
+  draftConfigData.rules[idx][field] = arr;
+
+  if (changed) {
+    updateDirtyStateUI();
+    renderRulesList();
+    lucide.createIcons();
+  }
+  return changed;
+}
+
+function removeRulePatternTag(idx, field, tagIdx) {
+  if (!draftConfigData || !draftConfigData.rules[idx]) return;
+  const arr = draftConfigData.rules[idx][field] || [];
+  if (tagIdx >= 0 && tagIdx < arr.length) {
+    arr.splice(tagIdx, 1);
+    updateDirtyStateUI();
+    renderRulesList();
+    lucide.createIcons();
+  }
+}
+
+function handleRuleTagInputKeydown(event, idx, field) {
+  const input = event.target;
+  if (event.key === 'Enter' || event.key === ',') {
+    event.preventDefault();
+    const val = input.value.trim();
+    if (val) {
+      addRulePatternTag(idx, field, val);
+    }
+  } else if (event.key === 'Backspace' && input.value === '') {
+    const arr = (draftConfigData && draftConfigData.rules[idx] && draftConfigData.rules[idx][field]) || [];
+    if (arr.length > 0) {
+      removeRulePatternTag(idx, field, arr.length - 1);
+    }
+  }
+}
+
+function handleRuleTagInputBlur(inputEl, idx, field) {
+  const val = inputEl.value.trim();
+  if (val) {
+    inputEl.value = '';
+    addRulePatternTag(idx, field, val);
+  }
+}
+
+/* Drag and Drop Reordering for Rule Cards */
+function onRuleDragStart(event, idx) {
+  // Avoid starting card drag when interacting with inputs or buttons
+  const tag = event.target && event.target.tagName ? event.target.tagName.toLowerCase() : '';
+  if (tag === 'input' || tag === 'select' || tag === 'button') {
+    event.preventDefault();
+    return;
+  }
+  draggedRuleIndex = idx;
+  event.currentTarget.classList.add('dragging');
+  if (event.dataTransfer) {
+    event.dataTransfer.effectAllowed = 'move';
+    event.dataTransfer.setData('text/plain', String(idx));
+  }
+}
+
+function onRuleDragOver(event, idx) {
+  event.preventDefault();
+  if (draggedRuleIndex === null || draggedRuleIndex === idx) return;
+  event.currentTarget.classList.add('drag-over');
+}
+
+function onRuleDragLeave(event) {
+  event.currentTarget.classList.remove('drag-over');
+}
+
+function onRuleDrop(event, targetIdx) {
+  event.preventDefault();
+  event.currentTarget.classList.remove('drag-over');
+  if (draggedRuleIndex === null || draggedRuleIndex === targetIdx || !draftConfigData) return;
+
+  const [moved] = draftConfigData.rules.splice(draggedRuleIndex, 1);
+  draftConfigData.rules.splice(targetIdx, 0, moved);
+  draggedRuleIndex = null;
+  highlightedRuleIndex = targetIdx;
+
+  updateDirtyStateUI();
+  renderRulesList();
+  lucide.createIcons();
+  setTimeout(() => { highlightedRuleIndex = null; }, 1500);
+}
+
+function onRuleDragEnd(event) {
+  draggedRuleIndex = null;
+  event.currentTarget.classList.remove('dragging');
+  document.querySelectorAll('.rule-card.drag-over').forEach(el => el.classList.remove('drag-over'));
+}
+
+function discardConfigChanges() {
+  if (!savedConfigData) return;
+  draftConfigData = cloneConfig(savedConfigData);
+  hideConfigFeedback();
+  renderConfigView();
+  showConfigFeedback('info', 'Reverted unsaved changes back to the active daemon configuration.');
+}
+
+async function saveAndApplyConfig() {
+  if (!draftConfigData) return;
+  const btnSave = document.getElementById('btnSaveConfig');
+  if (btnSave) btnSave.disabled = true;
+
+  try {
+    const res = await fetch('/api/config', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ config: draftConfigData }),
+    });
+    const payload = await res.json();
+    if (!res.ok || payload.status !== 'ok') {
+      throw new Error(payload.error || `HTTP ${res.status}`);
+    }
+
+    const data = payload.data;
+    savedConfigData = normalizeConfigData(data.config);
+    draftConfigData = cloneConfig(savedConfigData);
+    lastServerYaml = data.yaml || '';
+    configFilePath = data.config_path || configFilePath;
+    serverRestartRequired = Boolean(data.restart_required);
+    boundWebServer = data.bound_web_server || boundWebServer;
+
+    renderConfigView();
+    showConfigFeedback(
+      'success',
+      `Configuration saved to ${configFilePath} (backup written to ${configFilePath}.bak) and hot-reloaded in memory.`
+    );
+    refreshData();
+  } catch (err) {
+    console.error('Failed to save configuration:', err);
+    showConfigFeedback('error', `Failed to save configuration: ${err.message}`);
+    updateDirtyStateUI();
+  }
+}
+
+function showConfigFeedback(type, message) {
+  const banner = document.getElementById('configFeedbackBanner');
+  const icon = document.getElementById('configFeedbackIcon');
+  const text = document.getElementById('configFeedbackText');
+  if (!banner || !text) return;
+
+  banner.className = `config-banner ${type === 'error' ? 'error' : (type === 'success' ? 'success' : 'warning')}`;
+  if (icon) {
+    const iconName = type === 'error' ? 'alert-circle' : (type === 'success' ? 'check-circle-2' : 'info');
+    icon.setAttribute('data-lucide', iconName);
+  }
+  text.textContent = message;
+  lucide.createIcons();
+}
+
+function hideConfigFeedback() {
+  const banner = document.getElementById('configFeedbackBanner');
+  if (banner) banner.classList.add('hidden');
+}
+
+/* Raw YAML Preview & Import Modal */
+function yamlQuoteScalar(val) {
+  const s = String(val ?? '');
+  if (
+    s === '' ||
+    s === '*' ||
+    s.startsWith('*') ||
+    s.includes(':') ||
+    s.includes('#') ||
+    s.includes('[') ||
+    s.includes(']') ||
+    s.includes('{') ||
+    s.includes('}') ||
+    s.includes(',') ||
+    s.includes(' ') ||
+    s === 'true' ||
+    s === 'false' ||
+    s === 'null'
+  ) {
+    return `"${s.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
+  }
+  return s;
+}
+
+function generateClientSideYamlPreview(cfg) {
+  if (!cfg) return '';
+  const lines = [];
+  lines.push('# ==============================================================================');
+  lines.push('# mDNS Sieve Configuration File');
+  lines.push('# ==============================================================================');
+  lines.push('');
+  lines.push('# 1. Network Interfaces');
+  if (!cfg.interfaces || cfg.interfaces.length === 0) {
+    lines.push('interfaces: []');
+  } else {
+    lines.push('interfaces:');
+    cfg.interfaces.forEach(iface => {
+      lines.push(`  - ${yamlQuoteScalar(iface)}`);
+    });
+  }
+  lines.push('');
+  lines.push('# 2. Global Routing Policy');
+  lines.push(`default_action: ${yamlQuoteScalar(cfg.default_action || 'forward')}`);
+  lines.push(`rewrite_mixed_packets: ${Boolean(cfg.rewrite_mixed_packets)}`);
+  lines.push(`forward_known_answers: ${Boolean(cfg.forward_known_answers)}`);
+  lines.push('');
+
+  const ws = cfg.web_server || { enabled: true, host: '0.0.0.0', port: 8080 };
+  lines.push('# 3. Web Dashboard Server');
+  lines.push('web_server:');
+  lines.push(`  enabled: ${Boolean(ws.enabled)}`);
+  lines.push(`  host: "${ws.host || '0.0.0.0'}"`);
+  lines.push(`  port: ${ws.port || 8080}`);
+  lines.push('');
+
+  const tr = cfg.tracking || {
+    enabled: true,
+    max_records: 50000,
+    db_path: '/var/lib/mdns-sieve/responses.db',
+    flush_interval_seconds: 3600,
+    retention_days: 7,
+  };
+  lines.push('# 4. Telemetry & Message History Database');
+  lines.push('tracking:');
+  lines.push(`  enabled: ${Boolean(tr.enabled)}`);
+  lines.push(`  max_records: ${tr.max_records ?? 50000}`);
+  lines.push(`  db_path: "${tr.db_path || '/var/lib/mdns-sieve/responses.db'}"`);
+  lines.push(`  flush_interval_seconds: ${tr.flush_interval_seconds ?? 3600}`);
+  lines.push(`  retention_days: ${tr.retention_days ?? 7}`);
+  lines.push('');
+
+  lines.push('# 5. Filtering Rules (First match wins)');
+  if (!cfg.rules || cfg.rules.length === 0) {
+    lines.push('rules: []');
+  } else {
+    lines.push('rules:');
+    cfg.rules.forEach((rule, idx) => {
+      lines.push(`  # Rule #${idx + 1}`);
+      lines.push(`  - action: ${yamlQuoteScalar(rule.action || 'forward')}`);
+      if (rule.section && rule.section !== 'any') {
+        lines.push(`    section: ${yamlQuoteScalar(rule.section)}`);
+      }
+      const writeEndpoint = (key, val) => {
+        if (Array.isArray(val)) {
+          if (val.length === 1) {
+            lines.push(`    ${key}: ${yamlQuoteScalar(val[0])}`);
+          } else {
+            lines.push(`    ${key}: [${val.map(yamlQuoteScalar).join(', ')}]`);
+          }
+        } else {
+          lines.push(`    ${key}: ${yamlQuoteScalar(val || '*')}`);
+        }
+      };
+      writeEndpoint('src', rule.src);
+      writeEndpoint('dst', rule.dst);
+      if (Array.isArray(rule.services) && rule.services.length > 0) {
+        lines.push('    services:');
+        rule.services.forEach(s => lines.push(`      - ${yamlQuoteScalar(s)}`));
+      }
+      if (Array.isArray(rule.hosts) && rule.hosts.length > 0) {
+        lines.push('    hosts:');
+        rule.hosts.forEach(h => lines.push(`      - ${yamlQuoteScalar(h)}`));
+      }
+    });
+  }
+
+  if (cfg.ssdp) {
+    lines.push('');
+    lines.push('# 6. SSDP Reflector (239.255.255.250:1900)');
+    lines.push('ssdp:');
+    lines.push(`  enabled: ${Boolean(cfg.ssdp.enabled)}`);
+    lines.push(`  default_action: ${yamlQuoteScalar(cfg.ssdp.default_action || 'forward')}`);
+    if (!cfg.ssdp.interfaces || cfg.ssdp.interfaces.length === 0) {
+      lines.push('  interfaces: []');
+    } else {
+      lines.push('  interfaces:');
+      cfg.ssdp.interfaces.forEach(iface => lines.push(`    - ${yamlQuoteScalar(iface)}`));
+    }
+    if (!cfg.ssdp.rules || cfg.ssdp.rules.length === 0) {
+      lines.push('  rules: []');
+    } else {
+      lines.push('  rules:');
+      cfg.ssdp.rules.forEach(r => {
+        lines.push(`    - action: ${yamlQuoteScalar(r.action || 'allow')}`);
+        if (r.method) lines.push(`      method: ${yamlQuoteScalar(r.method)}`);
+        if (Array.isArray(r.from) && r.from.length > 0) {
+          lines.push(`      from: [${r.from.map(yamlQuoteScalar).join(', ')}]`);
+        }
+        if (Array.isArray(r.to) && r.to.length > 0) {
+          lines.push(`      to: [${r.to.map(yamlQuoteScalar).join(', ')}]`);
+        }
+        if (r.st) lines.push(`      st: ${yamlQuoteScalar(r.st)}`);
+        if (r.usn) lines.push(`      usn: ${yamlQuoteScalar(r.usn)}`);
+      });
+    }
+  }
+
+  return lines.join('\n') + '\n';
+}
+
+function openYamlModal() {
+  const errBanner = document.getElementById('yamlModalError');
+  if (errBanner) errBanner.classList.add('hidden');
+
+  const textarea = document.getElementById('yamlEditorTextarea');
+  if (textarea) {
+    textarea.value = (!isConfigDirty() && lastServerYaml)
+      ? lastServerYaml
+      : generateClientSideYamlPreview(draftConfigData);
+  }
+  toggleModal('yamlModal', true);
+}
+
+function copyYamlFromModal(btn) {
+  const textarea = document.getElementById('yamlEditorTextarea');
+  if (!textarea) return;
+  navigator.clipboard.writeText(textarea.value).then(() => {
+    const span = btn.querySelector('span');
+    const orig = span ? span.textContent : 'Copy YAML';
+    if (span) span.textContent = 'Copied!';
+    setTimeout(() => {
+      if (span) span.textContent = orig;
+    }, 1500);
+  });
+}
+
+function downloadYamlFile() {
+  const textarea = document.getElementById('yamlEditorTextarea');
+  const content = textarea ? textarea.value : generateClientSideYamlPreview(draftConfigData);
+  const blob = new Blob([content], { type: 'text/yaml;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = 'mdns-sieve.yaml';
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+
+async function saveYamlDirectlyFromModal() {
+  const textarea = document.getElementById('yamlEditorTextarea');
+  const errBanner = document.getElementById('yamlModalError');
+  const errText = document.getElementById('yamlModalErrorText');
+  if (!textarea) return;
+
+  try {
+    const res = await fetch('/api/config', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ yaml: textarea.value }),
+    });
+    const payload = await res.json();
+    if (!res.ok || payload.status !== 'ok') {
+      throw new Error(payload.error || `HTTP ${res.status}`);
+    }
+
+    const data = payload.data;
+    savedConfigData = normalizeConfigData(data.config);
+    draftConfigData = cloneConfig(savedConfigData);
+    lastServerYaml = data.yaml || '';
+    configFilePath = data.config_path || configFilePath;
+    serverRestartRequired = Boolean(data.restart_required);
+    boundWebServer = data.bound_web_server || boundWebServer;
+
+    toggleModal('yamlModal', false);
+    renderConfigView();
+    showConfigFeedback(
+      'success',
+      `YAML configuration validated, saved to ${configFilePath}, and hot-reloaded in memory.`
+    );
+    refreshData();
+  } catch (err) {
+    if (errBanner && errText) {
+      errText.textContent = err.message;
+      errBanner.classList.remove('hidden');
+      lucide.createIcons();
+    }
+  }
+}
+
+/* Quick "+ Rule" Action from Message History */
+async function createQuickRuleFromHistory(btnEl, event) {
+  if (event) event.stopPropagation();
+  if (!btnEl) return;
+
+  const srcIface = btnEl.getAttribute('data-src') || '*';
+  const disp = Number(btnEl.getAttribute('data-disp') || 0);
+  const section = btnEl.getAttribute('data-section') || 'any';
+  const rawName = (btnEl.getAttribute('data-name') || '').trim().replace(/\.$/, '');
+  const rrType = Number(btnEl.getAttribute('data-rrtype') || 0);
+
+  if (!configInitialized) {
+    configInitialized = true;
+    await Promise.all([loadConfigFromServer(), loadSystemInterfaces()]);
+  }
+
+  // Toggle opposite action of current item disposition (2 = Dropped -> forward, otherwise drop)
+  const targetAction = disp === 2 ? 'forward' : 'drop';
+  const isAddressRecord = rrType === 1 || rrType === 28; // A or AAAA
+
+  const draftRule = {
+    action: targetAction,
+    section: (section === 'questions' || section === 'answers') ? section : 'any',
+    src: srcIface || '*',
+    dst: '*',
+    services: !isAddressRecord && rawName ? [rawName] : [],
+    hosts: isAddressRecord && rawName ? [rawName] : [],
+  };
+
+  switchMainView('config');
+  addConfigRule(draftRule, true);
+  showConfigFeedback(
+    'info',
+    `Drafted a new ${targetAction.toUpperCase()} rule #1 for "${rawName || '*'}" from ${srcIface}. Click "Save & Apply" to activate.`
+  );
+
+  setTimeout(() => {
+    const card = document.getElementById('configRuleCard_0');
+    if (card) {
+      card.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    }
+  }, 100);
+}
+

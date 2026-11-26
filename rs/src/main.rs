@@ -1,4 +1,5 @@
 mod mdns;
+mod ssdp;
 mod config;
 mod database;
 mod server;
@@ -17,20 +18,25 @@ use tokio::signal;
 struct Args {
     #[arg(short, long, default_value = "/etc/mdns-sieve.yaml")]
     config: String,
+    #[arg(short, long, default_value_t = false)]
+    verbose: bool,
 }
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
     
-    let config = AppConfig::load_from_file(&args.config)?;
+    let (config, config_data) = AppConfig::load_from_file_with_data(&args.config)?;
     let config_arc = Arc::new(config);
+    let (config_tx, config_rx) = tokio::sync::watch::channel(config_arc.clone());
 
-    let manager = Arc::new(Mutex::new(CommandServerManager::new(
+    let mut mgr_inner = CommandServerManager::new(
         config_arc.web_server.clone(),
         config_arc.tracking.clone(),
         config_arc.interfaces.clone(),
-    )));
+    );
+    mgr_inner.set_config_context(args.config.clone(), config_data, config_tx);
+    let manager = Arc::new(Mutex::new(mgr_inner));
 
     if let Some(ws_cfg) = &config_arc.web_server {
         if ws_cfg.enabled {
@@ -43,10 +49,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
-    let reflector = Reflector::new(config_arc.clone(), manager.clone());
+    let reflector = Reflector::new(config_rx.clone(), manager.clone());
     
     let _reflector_handle = tokio::spawn(async move {
         reflector.run().await;
+    });
+
+    let mut ssdp_reflector = crate::ssdp::SsdpReflector::new(config_rx, manager.clone(), args.verbose);
+    let _ssdp_handle = tokio::spawn(async move {
+        ssdp_reflector.run().await;
     });
 
     // Handle signals for graceful shutdown

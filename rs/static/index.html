@@ -51,7 +51,16 @@
         </button>
         <button id="viewBtnHistory" class="view-nav-btn" onclick="switchMainView('history')">
           <i data-lucide="history"></i>
-          <span>Message History</span>
+          <span>mDNS</span>
+        </button>
+        <button id="viewBtnSsdp" class="view-nav-btn" onclick="switchMainView('ssdp')">
+          <i data-lucide="radio"></i>
+          <span>SSDP</span>
+        </button>
+        <button id="viewBtnConfig" class="view-nav-btn" onclick="switchMainView('config')">
+          <i data-lucide="sliders"></i>
+          <span>Configuration</span>
+          <span id="configDirtyBadge" class="dirty-dot hidden" title="Unsaved configuration changes"></span>
         </button>
       </nav>
 
@@ -173,6 +182,155 @@
       </main>
     </div> <!-- /#liveDashboardView -->
 
+    <!-- SSDP History View Container -->
+    <div id="ssdpHistoryView" class="hidden">
+      <section class="dashboard-card history-card">
+        <div class="card-header history-header-wrapper">
+          <div class="history-title-group">
+            <h2>SSDP Message History</h2>
+            <span class="card-subtitle">Chronological record of received SSDP packets and per-interface dispositions</span>
+          </div>
+          <div class="history-header-actions">
+            <div class="disp-legend">
+              <span class="disp-legend-item"><span class="disp-dot forwarded"></span> Forwarded</span>
+              <span class="disp-legend-item"><span class="disp-dot partially-forwarded"></span> Partially Forwarded</span>
+              <span class="disp-legend-item"><span class="disp-dot dropped"></span> Dropped</span>
+            </div>
+            <button onclick="loadSsdpHistory(1)" class="btn btn-secondary" title="Refresh SSDP History">
+              <i data-lucide="refresh-cw"></i>
+              <span>Refresh</span>
+            </button>
+            <button onclick="resetSsdpFilters()" class="btn btn-secondary" title="Reset Filters to Default">
+              <i data-lucide="rotate-ccw"></i>
+              <span>Reset</span>
+            </button>
+          </div>
+        </div>
+
+        <!-- Filter Bar -->
+        <div class="history-filter-bar">
+          <!-- Search Inputs Row -->
+          <div class="history-search-grid ssdp-search-grid">
+            <div class="search-input-wrapper">
+              <i data-lucide="search" class="search-icon"></i>
+              <input type="text" id="ssdpContentSearch" placeholder="Filter by ST / NT or USN (e.g. upnp:rootdevice, uuid:...)..." onkeydown="if(event.key==='Enter') loadSsdpHistory(1)">
+            </div>
+            <div class="search-input-wrapper">
+              <i data-lucide="monitor" class="search-icon"></i>
+              <input type="text" id="ssdpSrcIpFilter" placeholder="Filter by source IP (e.g. 192.168.1.50)..." onkeydown="if(event.key==='Enter') loadSsdpHistory(1)">
+            </div>
+            <button onclick="loadSsdpHistory(1)" class="btn btn-primary">
+              <i data-lucide="search"></i>
+              <span>Search</span>
+            </button>
+          </div>
+
+          <!-- Dropdown Selectors Row -->
+          <div class="filter-controls-group">
+            <select id="ssdpInterfaceFilter" onchange="loadSsdpHistory(1)" class="filter-select">
+              <option value="">All Ingress Interfaces</option>
+            </select>
+
+            <select id="ssdpDstInterfaceFilter" onchange="loadSsdpHistory(1)" class="filter-select">
+              <option value="">All Destination Interfaces</option>
+            </select>
+
+            <select id="ssdpDispositionFilter" onchange="loadSsdpHistory(1)" class="filter-select">
+              <option value="">All Dispositions</option>
+              <option value="0">Forwarded</option>
+              <option value="1">Partially Forwarded</option>
+              <option value="2">Dropped</option>
+            </select>
+
+            <select id="ssdpMethodFilter" onchange="loadSsdpHistory(1)" class="filter-select">
+              <option value="">All Methods</option>
+              <option value="M-SEARCH">M-SEARCH</option>
+              <option value="NOTIFY">NOTIFY</option>
+              <option value="RESPONSE">RESPONSE (200 OK)</option>
+            </select>
+
+            <select id="ssdpTimePreset" onchange="onSsdpPresetChange()" class="filter-select">
+              <option value="15m">Last 15 Minutes</option>
+              <option value="1h">Last 1 Hour</option>
+              <option value="24h">Last 24 Hours</option>
+              <option value="7d" selected>Last 7 Days</option>
+              <option value="all">All Time</option>
+              <option value="custom">Custom Range...</option>
+            </select>
+          </div>
+
+          <!-- Custom Time Range Row -->
+          <div id="ssdpCustomTimeRow" class="custom-time-row hidden">
+            <div class="custom-time-field">
+              <label for="ssdpTimeFrom">From:</label>
+              <input type="datetime-local" id="ssdpTimeFrom" class="datetime-input">
+            </div>
+            <div class="custom-time-field">
+              <label for="ssdpTimeTo">To:</label>
+              <input type="datetime-local" id="ssdpTimeTo" class="datetime-input">
+            </div>
+            <button onclick="loadSsdpHistory(1)" class="btn btn-primary btn-sm">Apply Range</button>
+          </div>
+        </div>
+
+        <!-- Table Container -->
+        <div class="table-container history-table-container">
+          <table class="history-table">
+            <thead>
+              <tr>
+                <th style="width: 36px;"></th>
+                <th style="width: 56px; text-align: center;">Status</th>
+                <th style="width: 165px;">Timestamp</th>
+                <th style="width: 130px;">Source IP</th>
+                <th style="width: 95px;">Ingress</th>
+                <th style="width: 125px;">Method</th>
+                <th style="width: 145px;">Forwarded To</th>
+                <th>ST / NT &amp; USN</th>
+                <th style="width: 80px; text-align: right;">Action</th>
+              </tr>
+            </thead>
+            <tbody id="ssdpHistoryTableBody">
+              <tr>
+                <td colspan="9" class="table-empty">Loading SSDP message history...</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <!-- Pagination Bar -->
+        <div class="history-pagination">
+          <div class="pagination-info" id="ssdpPaginationInfo">
+            Showing 0 - 0 of 0 messages
+          </div>
+          <div class="pagination-controls">
+            <div class="page-size-selector">
+              <label for="ssdpPageSize">Per page:</label>
+              <select id="ssdpPageSize" onchange="loadSsdpHistory(1)" class="filter-select select-sm">
+                <option value="25">25</option>
+                <option value="50" selected>50</option>
+                <option value="100">100</option>
+              </select>
+            </div>
+            <div class="pagination-buttons">
+              <button id="btnSsdpFirst" onclick="ssdpGoToPage(1)" class="btn btn-icon btn-sm" title="First Page">
+                <i data-lucide="chevrons-left"></i>
+              </button>
+              <button id="btnSsdpPrev" onclick="ssdpGoToPage(currentSsdpPage - 1)" class="btn btn-icon btn-sm" title="Previous Page">
+                <i data-lucide="chevron-left"></i>
+              </button>
+              <span id="ssdpPageIndicator" class="page-indicator">Page 1 of 1</span>
+              <button id="btnSsdpNext" onclick="ssdpGoToPage(currentSsdpPage + 1)" class="btn btn-icon btn-sm" title="Next Page">
+                <i data-lucide="chevron-right"></i>
+              </button>
+              <button id="btnSsdpLast" onclick="ssdpGoToPage(totalSsdpPages)" class="btn btn-icon btn-sm" title="Last Page">
+                <i data-lucide="chevrons-right"></i>
+              </button>
+            </div>
+          </div>
+        </div>
+      </section>
+    </div>
+
     <!-- Message History View Container -->
     <div id="messageHistoryView" class="hidden">
       <section class="dashboard-card history-card">
@@ -203,12 +361,8 @@
           <!-- Search Inputs Row -->
           <div class="history-search-grid">
             <div class="search-input-wrapper">
-              <i data-lucide="help-circle" class="search-icon"></i>
-              <input type="text" id="historyQuerySearch" placeholder="Filter by query name (e.g. _googlecast._tcp.local)..." onkeydown="if(event.key==='Enter') loadHistoryData(1)">
-            </div>
-            <div class="search-input-wrapper">
-              <i data-lucide="database" class="search-icon"></i>
-              <input type="text" id="historyResponseSearch" placeholder="Filter by response name or data (IP, target, TXT)..." onkeydown="if(event.key==='Enter') loadHistoryData(1)">
+              <i data-lucide="search" class="search-icon"></i>
+              <input type="text" id="historyContentSearch" placeholder="Filter by query or response (name, IP, target, TXT)..." onkeydown="if(event.key==='Enter') loadHistoryData(1)">
             </div>
             <div class="search-input-wrapper">
               <i data-lucide="monitor" class="search-icon"></i>
@@ -323,6 +477,318 @@
         </div>
       </section>
     </div>
+
+    <!-- Configuration View Container -->
+    <div id="configurationView" class="hidden">
+      <!-- Sticky Action & Status Bar -->
+      <section class="dashboard-card config-action-bar">
+        <div class="config-status-left">
+          <div class="config-file-pill" title="Active configuration file path on disk">
+            <i data-lucide="file-text"></i>
+            <code id="configFilePath">/etc/mdns-sieve.yaml</code>
+          </div>
+          <div id="configStateBadge" class="config-state-badge saved">
+            <span class="state-dot"></span>
+            <span id="configStateText">All changes saved &amp; active</span>
+          </div>
+        </div>
+        <div class="config-actions-right">
+          <button onclick="openYamlModal()" class="btn btn-secondary" title="View, copy, download, or import raw YAML configuration">
+            <i data-lucide="file-code"></i>
+            <span>YAML Preview / Import</span>
+          </button>
+          <button id="btnDiscardConfig" onclick="discardConfigChanges()" class="btn btn-secondary" disabled title="Revert unsaved edits to the active daemon configuration">
+            <i data-lucide="rotate-ccw"></i>
+            <span>Discard</span>
+          </button>
+          <button id="btnSaveConfig" onclick="saveAndApplyConfig()" class="btn btn-primary" disabled title="Write configuration to disk and hot-reload daemon">
+            <i data-lucide="check-circle-2"></i>
+            <span>Save &amp; Apply</span>
+          </button>
+        </div>
+      </section>
+
+      <!-- Restart Required Banner -->
+      <div id="configRestartBanner" class="config-banner warning hidden">
+        <i data-lucide="alert-triangle"></i>
+        <div>
+          <strong>Daemon Restart Required for Web Server Address Change:</strong>
+          <span id="configRestartBannerText">Filtering rules, interfaces, and tracking settings have been hot-reloaded in memory, but the new Web Server listen host/port will take effect after restarting the daemon.</span>
+        </div>
+      </div>
+
+      <!-- Feedback Toast Banner -->
+      <div id="configFeedbackBanner" class="config-banner hidden">
+        <i id="configFeedbackIcon" data-lucide="info"></i>
+        <span id="configFeedbackText"></span>
+        <button onclick="hideConfigFeedback()" class="btn-banner-close" title="Dismiss"><i data-lucide="x"></i></button>
+      </div>
+
+      <!-- Row 1: Network Interfaces & Global Routing Policy -->
+      <div class="config-grid-two">
+        <!-- Card 1: Network Interfaces -->
+        <section class="dashboard-card config-card">
+          <div class="card-header config-card-header">
+            <div>
+              <h2>Network Interfaces</h2>
+              <span class="card-subtitle">Physical or virtual interfaces bound for mDNS multicast reflection</span>
+            </div>
+            <button onclick="loadSystemInterfaces()" class="btn btn-icon btn-sm" title="Rescan System Interfaces">
+              <i data-lucide="refresh-cw"></i>
+            </button>
+          </div>
+          <div class="config-card-body">
+            <div class="config-field-block">
+              <label class="config-label">Detected System Interfaces</label>
+              <p class="help-text" style="margin-bottom: 10px;">Click an interface chip to toggle whether mDNS Sieve listens and reflects on it.</p>
+              <div id="detectedInterfacesContainer" class="iface-chips-wrap">
+                <span class="help-text">Scanning system interfaces...</span>
+              </div>
+            </div>
+
+            <div class="config-field-block" style="margin-top: 18px;">
+              <label class="config-label">Active Configured Interfaces</label>
+              <div id="activeInterfacesContainer" class="iface-chips-wrap" style="margin-bottom: 10px;"></div>
+              <div class="custom-iface-input-row">
+                <input type="text" id="customInterfaceInput" class="config-input" placeholder="Add custom interface (e.g. br0, eth0.10, wlan1)..." onkeydown="if(event.key==='Enter'){event.preventDefault(); addCustomInterface();}">
+                <button onclick="addCustomInterface()" class="btn btn-secondary">
+                  <i data-lucide="plus"></i>
+                  <span>Add</span>
+                </button>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <!-- Card 2: Global Routing Policy -->
+        <section class="dashboard-card config-card">
+          <div class="card-header config-card-header">
+            <div>
+              <h2>Global Routing Policy</h2>
+              <span class="card-subtitle">Default fallback disposition and packet rewriting behavior</span>
+            </div>
+          </div>
+          <div class="config-card-body">
+            <div class="config-field-block">
+              <label class="config-label">Default Fallback Action (When No Rules Match)</label>
+              <div class="segmented-action-group">
+                <button type="button" id="btnDefaultForward" class="seg-action-btn forward active" onclick="setConfigDefaultAction('forward')">
+                  <i data-lucide="check-circle"></i>
+                  <div>
+                    <div class="seg-title">Forward by Default</div>
+                    <div class="seg-desc">Allow packets unless matched by a Drop rule</div>
+                  </div>
+                </button>
+                <button type="button" id="btnDefaultDrop" class="seg-action-btn drop" onclick="setConfigDefaultAction('drop')">
+                  <i data-lucide="shield-off"></i>
+                  <div>
+                    <div class="seg-title">Drop by Default</div>
+                    <div class="seg-desc">Block all traffic unless matched by a Forward rule</div>
+                  </div>
+                </button>
+              </div>
+            </div>
+
+            <div class="config-toggle-list">
+              <div class="config-toggle-row">
+                <div class="config-toggle-info">
+                  <div class="config-toggle-title">Rewrite Mixed Packets</div>
+                  <div class="config-toggle-desc">Inspect and filter individual questions and resource records inside a packet rather than forwarding or dropping the entire packet as a unit.</div>
+                </div>
+                <label class="switch">
+                  <input type="checkbox" id="cfgRewriteMixed" onchange="onGlobalPolicyChange()">
+                  <span class="slider round"></span>
+                </label>
+              </div>
+
+              <div class="config-toggle-row">
+                <div class="config-toggle-info">
+                  <div class="config-toggle-title">Forward Known Answers</div>
+                  <div class="config-toggle-desc">Allow all known-answer records inside query packets to be forwarded without performing two-way isolation rule checks.</div>
+                </div>
+                <label class="switch">
+                  <input type="checkbox" id="cfgForwardKnownAnswers" onchange="onGlobalPolicyChange()">
+                  <span class="slider round"></span>
+                </label>
+              </div>
+            </div>
+          </div>
+        </section>
+      </div>
+
+      <!-- Row 2: Filtering Rules Builder -->
+      <section class="dashboard-card config-card config-rules-section">
+        <div class="card-header config-card-header">
+          <div>
+            <div style="display: flex; align-items: center; gap: 10px;">
+              <h2>Filtering Rules</h2>
+              <span id="configRulesCountBadge" class="badge">0 rules</span>
+            </div>
+            <span class="card-subtitle">Processed in order from top to bottom — the first matching rule wins. Drag rules by the handle or use arrow buttons to reorder.</span>
+          </div>
+          <div style="display: flex; gap: 8px;">
+            <button onclick="addConfigRule()" class="btn btn-primary">
+              <i data-lucide="plus"></i>
+              <span>Add Rule</span>
+            </button>
+          </div>
+        </div>
+        <div class="config-card-body">
+          <div id="configRulesList" class="rules-list-container"></div>
+        </div>
+      </section>
+
+      <!-- Row 3: Database Telemetry & Web Server Settings -->
+      <div class="config-grid-two">
+        <!-- Card 1: Telemetry & History Database -->
+        <section class="dashboard-card config-card">
+          <div class="card-header config-card-header">
+            <div>
+              <h2>Database &amp; Message History Tracking</h2>
+              <span class="card-subtitle">SQLite persistence, retention window, and memory buffer flush settings</span>
+            </div>
+            <label class="switch" title="Enable or disable SQLite message history tracking">
+              <input type="checkbox" id="cfgTrackingEnabled" onchange="onTrackingConfigChange()">
+              <span class="slider round"></span>
+            </label>
+          </div>
+          <div class="config-card-body" id="cfgTrackingFieldsWrap">
+            <div class="config-form-grid">
+              <div class="form-group">
+                <label for="cfgTrackingRetention">Retention Period (days)</label>
+                <input type="number" id="cfgTrackingRetention" class="config-input" min="1" max="3650" value="7" onchange="onTrackingConfigChange()" oninput="onTrackingConfigChange()">
+                <p class="help-text">Automatically prune messages older than this number of days.</p>
+              </div>
+              <div class="form-group">
+                <label for="cfgTrackingMaxRecords">Max Stored Messages (0 = unlimited)</label>
+                <input type="number" id="cfgTrackingMaxRecords" class="config-input" min="0" step="1000" value="50000" onchange="onTrackingConfigChange()" oninput="onTrackingConfigChange()">
+                <p class="help-text">Maximum message rows retained in the SQLite database.</p>
+              </div>
+              <div class="form-group">
+                <label for="cfgTrackingFlushInterval">Flush Interval (seconds)</label>
+                <input type="number" id="cfgTrackingFlushInterval" class="config-input" min="1" max="86400" value="3600" onchange="onTrackingConfigChange()" oninput="onTrackingConfigChange()">
+                <p class="help-text">How often buffered messages are flushed to disk (or every 200 packets).</p>
+              </div>
+              <div class="form-group">
+                <label for="cfgTrackingDbPath">SQLite Database Path</label>
+                <input type="text" id="cfgTrackingDbPath" class="config-input" value="/var/lib/mdns-sieve/responses.db" onchange="onTrackingConfigChange()" oninput="onTrackingConfigChange()">
+                <p class="help-text">File path on the host where message telemetry is persisted.</p>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <!-- Card 2: Web Dashboard Server -->
+        <section class="dashboard-card config-card">
+          <div class="card-header config-card-header">
+            <div>
+              <h2>Web Dashboard Server</h2>
+              <span class="card-subtitle">HTTP bind address and port for this dashboard and JSON API</span>
+            </div>
+            <span class="badge-status active"><span class="status-dot"></span> Enabled</span>
+          </div>
+          <div class="config-card-body">
+            <div class="config-form-grid">
+              <div class="form-group">
+                <label for="cfgWebHost">Listen Host / IP Address</label>
+                <input type="text" id="cfgWebHost" class="config-input" value="0.0.0.0" placeholder="0.0.0.0" onchange="onWebServerConfigChange()" oninput="onWebServerConfigChange()">
+                <p class="help-text">Use <code>0.0.0.0</code> for all interfaces or a specific management IP.</p>
+              </div>
+              <div class="form-group">
+                <label for="cfgWebPort">Listen Port</label>
+                <input type="number" id="cfgWebPort" class="config-input" min="1" max="65535" value="8080" onchange="onWebServerConfigChange()" oninput="onWebServerConfigChange()">
+                <p class="help-text">TCP port for the embedded web server (1 - 65535).</p>
+              </div>
+            </div>
+            <p class="help-text" style="margin-top: 8px; display: flex; align-items: center; gap: 6px;">
+              <i data-lucide="info" style="width: 14px; height: 14px; flex-shrink: 0;"></i>
+              <span>Changes to the web server host or port are saved to the YAML file immediately and take effect on the next daemon restart.</span>
+            </p>
+          </div>
+        </section>
+
+        <!-- Card 3: SSDP Reflector -->
+        <section class="dashboard-card config-card">
+          <div class="card-header config-card-header">
+            <div>
+              <h2>SSDP Reflector (239.255.255.250:1900)</h2>
+              <span class="card-subtitle">Reflect SSDP discovery and announcements across interfaces</span>
+            </div>
+            <label class="toggle-switch" title="Enable or disable SSDP reflection">
+              <input type="checkbox" id="cfgSsdpEnabled" onchange="onSsdpConfigChange()">
+              <span class="toggle-slider"></span>
+            </label>
+          </div>
+          <div class="config-card-body">
+            <div class="config-form-grid">
+              <div class="form-group">
+                <label for="cfgSsdpDefaultAction">SSDP Default Action</label>
+                <select id="cfgSsdpDefaultAction" class="config-input" onchange="onSsdpConfigChange()">
+                  <option value="forward">Forward (allow unmatched)</option>
+                  <option value="drop">Drop (deny unmatched)</option>
+                </select>
+                <p class="help-text">Action taken when no SSDP rule matches a packet.</p>
+              </div>
+              <div class="form-group">
+                <label>SSDP Interfaces</label>
+                <div id="cfgSsdpInterfacesContainer" class="iface-chips-grid"></div>
+                <p class="help-text">Select at least two interfaces to reflect SSDP traffic between them.</p>
+              </div>
+            </div>
+
+            <div style="margin-top: 16px;">
+              <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+                <label style="font-weight: 600;">SSDP Filtering Rules</label>
+                <button type="button" class="btn btn-secondary" onclick="addSsdpRule()">
+                  <i data-lucide="plus"></i>
+                  <span>Add SSDP Rule</span>
+                </button>
+              </div>
+              <div id="cfgSsdpRulesContainer"></div>
+            </div>
+          </div>
+        </section>
+      </div>
+    </div> <!-- /#configurationView -->
+  </div>
+
+  <!-- Raw YAML Preview / Import Modal -->
+  <div id="yamlModal" class="modal-overlay hidden">
+    <div class="modal-card modal-large">
+      <div class="modal-header">
+        <div>
+          <h2>YAML Configuration Preview &amp; Import</h2>
+          <span class="card-subtitle">Inspect generated YAML, download a copy, or paste/edit raw YAML directly</span>
+        </div>
+        <button onclick="toggleModal('yamlModal', false)" class="btn btn-icon"><i data-lucide="x"></i></button>
+      </div>
+      <div class="modal-body">
+        <div id="yamlModalError" class="config-banner error hidden" style="margin-bottom: 12px;">
+          <i data-lucide="alert-circle"></i>
+          <span id="yamlModalErrorText"></span>
+        </div>
+        <textarea id="yamlEditorTextarea" class="yaml-textarea" spellcheck="false"></textarea>
+      </div>
+      <div class="modal-footer" style="justify-content: space-between; flex-wrap: wrap;">
+        <div style="display: flex; gap: 8px;">
+          <button onclick="copyYamlFromModal(this)" class="btn btn-secondary">
+            <i data-lucide="copy"></i>
+            <span>Copy YAML</span>
+          </button>
+          <button onclick="downloadYamlFile()" class="btn btn-secondary">
+            <i data-lucide="download"></i>
+            <span>Download .yaml</span>
+          </button>
+        </div>
+        <div style="display: flex; gap: 8px;">
+          <button onclick="toggleModal('yamlModal', false)" class="btn btn-secondary">Close</button>
+          <button onclick="saveYamlDirectlyFromModal()" class="btn btn-primary">
+            <i data-lucide="check-circle-2"></i>
+            <span>Save &amp; Apply YAML</span>
+          </button>
+        </div>
+      </div>
+    </div>
   </div>
 
   <!-- Info Modal -->
@@ -375,13 +841,17 @@
         <h3>Network Traffic Graph</h3>
         <p>The network traffic graph displays real-time message activity across all configured interfaces, tracking Total, Forwarded, Partially Forwarded, and Dropped mDNS messages over time.</p>
 
-        <h3>Message History &amp; Dispositions</h3>
+        <h3>Message History &amp; Quick Rules</h3>
         <p>The "Message History" view records every received mDNS message along with the disposition of every individual question and resource record inside it:</p>
         <ul style="margin: 8px 0 12px 20px; font-size: 13px; color: var(--text-secondary); line-height: 1.6;">
           <li><strong>Green Dot (Forwarded):</strong> Forwarded to all candidate destination interfaces.</li>
           <li><strong>Yellow Dot (Partially Forwarded):</strong> Forwarded to a subset of destination interfaces, or packet had some records stripped while others were forwarded.</li>
           <li><strong>Red Dot (Dropped):</strong> Blocked on all destination interfaces.</li>
+          <li><strong>+ Rule Button:</strong> Expand any message row and click <code>+ Rule</code> next to a Question or Resource Record to draft a filtering rule directly in the Configuration tab.</li>
         </ul>
+
+        <h3>Configuration &amp; Live Hot-Reload</h3>
+        <p>Use the "Configuration" tab to manage network interfaces, global routing policies, ordered filtering rules, and database retention. Clicking <strong>Save &amp; Apply</strong> writes an atomic backup (<code>.bak</code>) and hot-reloads the daemon in memory.</p>
 
         <h3>Top-Right Icon Controls</h3>
         <p>The settings gear icon allows adjusting chart buffers and poll schedules locally. The info button exposes current connection profiles and version diagnostics.</p>

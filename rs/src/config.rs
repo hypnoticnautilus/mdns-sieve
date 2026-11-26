@@ -18,7 +18,7 @@ impl Default for RuleSection {
     }
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(untagged)]
 pub enum StringOrList {
     String(String),
@@ -31,7 +31,41 @@ impl Default for StringOrList {
     }
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize)]
+impl StringOrList {
+    pub fn normalized(&self) -> Self {
+        match self {
+            StringOrList::String(s) => {
+                let trimmed = s.trim();
+                if trimmed.is_empty() || trimmed == "*" {
+                    StringOrList::String("*".to_string())
+                } else {
+                    StringOrList::String(trimmed.to_string())
+                }
+            }
+            StringOrList::List(list) => {
+                let mut cleaned = Vec::new();
+                for item in list {
+                    let trimmed = item.trim();
+                    if trimmed == "*" {
+                        return StringOrList::String("*".to_string());
+                    }
+                    if !trimmed.is_empty() && !cleaned.iter().any(|x: &String| x == trimmed) {
+                        cleaned.push(trimmed.to_string());
+                    }
+                }
+                if cleaned.is_empty() {
+                    StringOrList::String("*".to_string())
+                } else if cleaned.len() == 1 {
+                    StringOrList::String(cleaned.into_iter().next().unwrap())
+                } else {
+                    StringOrList::List(cleaned)
+                }
+            }
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 pub struct FilterRuleConfig {
     pub action: String, // "forward" or "drop"
     #[serde(default)]
@@ -187,14 +221,14 @@ impl FilterRule {
     }
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 pub struct WebServerConfig {
     pub enabled: bool,
     pub host: String,
     pub port: u16,
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 pub struct TrackingConfig {
     pub enabled: bool,
     #[serde(default = "default_max_records")]
@@ -205,9 +239,9 @@ pub struct TrackingConfig {
     pub flush_interval_seconds: u64,
     #[serde(default = "default_retention_days")]
     pub retention_days: u32,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub history_retention_days: Option<u32>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_history_records: Option<usize>,
 }
 
@@ -226,8 +260,138 @@ fn default_flush_interval() -> u64 { 3600 }
 fn default_retention_days() -> u32 { 7 }
 fn default_max_records() -> usize { 50000 }
 
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+pub struct SystemInterfaceInfo {
+    pub name: String,
+    pub operstate: String,
+}
+
+pub fn discover_system_interfaces() -> Vec<SystemInterfaceInfo> {
+    discover_system_interfaces_from_dir(Path::new("/sys/class/net"))
+}
+
+pub fn discover_system_interfaces_from_dir(net_dir: &Path) -> Vec<SystemInterfaceInfo> {
+    let mut results = Vec::new();
+    let entries = match fs::read_dir(net_dir) {
+        Ok(e) => e,
+        Err(_) => return results,
+    };
+
+    for entry in entries.flatten() {
+        let name = entry.file_name().to_string_lossy().to_string();
+        if name == "lo" || name.starts_with('.') {
+            continue;
+        }
+        let operstate_path = entry.path().join("operstate");
+        let operstate = fs::read_to_string(operstate_path)
+            .map(|s| s.trim().to_lowercase())
+            .unwrap_or_else(|_| "unknown".to_string());
+        results.push(SystemInterfaceInfo { name, operstate });
+    }
+
+    results.sort_by(|a, b| a.name.cmp(&b.name));
+    results
+}
+
+fn is_valid_interface_name(name: &str) -> bool {
+    let trimmed = name.trim();
+    if trimmed.is_empty() || trimmed.len() > 64 {
+        return false;
+    }
+    !trimmed.chars().any(|c| c.is_whitespace() || c == '/' || c == '\\' || c == '\0')
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+pub struct SsdpRuleConfig {
+    pub action: String,
+    #[serde(default)]
+    pub from: Option<Vec<String>>,
+    #[serde(default)]
+    pub to: Option<Vec<String>>,
+    #[serde(default)]
+    pub method: Option<String>,
+    #[serde(default)]
+    pub st: Option<String>,
+    #[serde(default)]
+    pub usn: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct SsdpRule {
+    pub is_allow: bool,
+    pub from: Option<Vec<String>>,
+    pub to: Option<Vec<String>>,
+    pub method: Option<String>,
+    pub st_regex: Option<Regex>,
+    pub usn_regex: Option<Regex>,
+}
+
+impl SsdpRule {
+    pub fn from_config(cfg: &SsdpRuleConfig) -> Self {
+        let is_allow = matches!(cfg.action.trim().to_ascii_lowercase().as_str(), "allow" | "forward");
+        let compile_glob = |p: &str| -> Option<Regex> {
+            let escaped = regex::escape(p).replace(r"\*", ".*").replace(r"\?", ".");
+            Regex::new(&format!("^{}$", escaped)).ok()
+        };
+        let st_regex = cfg.st.as_deref().and_then(compile_glob);
+        let usn_regex = cfg.usn.as_deref().and_then(compile_glob);
+        Self {
+            is_allow,
+            from: cfg.from.clone(),
+            to: cfg.to.clone(),
+            method: cfg.method.as_ref().map(|m| m.trim().to_ascii_uppercase()),
+            st_regex,
+            usn_regex,
+        }
+    }
+
+    pub fn matches(&self, pkt: &crate::ssdp::SsdpPacket, src_iface: &str, dst_iface: &str) -> bool {
+        if let Some(ref from_ifaces) = self.from {
+            if !from_ifaces.iter().any(|i| i == src_iface || i == "*") {
+                return false;
+            }
+        }
+        if let Some(ref to_ifaces) = self.to {
+            if !to_ifaces.iter().any(|i| i == dst_iface || i == "*") {
+                return false;
+            }
+        }
+        if let Some(ref method) = self.method {
+            if method != "*" && method != pkt.method.as_str() {
+                return false;
+            }
+        }
+        if let Some(ref re) = self.st_regex {
+            match pkt.service_type() {
+                Some(st) if re.is_match(st) => {}
+                _ => return false,
+            }
+        }
+        if let Some(ref re) = self.usn_regex {
+            match pkt.usn.as_deref() {
+                Some(usn) if re.is_match(usn) => {}
+                _ => return false,
+            }
+        }
+        true
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, Default)]
+pub struct SsdpConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default)]
+    pub interfaces: Vec<String>,
+    #[serde(default)]
+    pub default_action: Option<String>,
+    #[serde(default)]
+    pub rules: Vec<SsdpRuleConfig>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 pub struct AppConfigData {
+    #[serde(default)]
     pub interfaces: Vec<String>,
     pub default_action: String,
     #[serde(default)]
@@ -238,6 +402,353 @@ pub struct AppConfigData {
     pub tracking: Option<TrackingConfig>,
     #[serde(default)]
     pub rules: Vec<FilterRuleConfig>,
+    #[serde(default)]
+    pub ssdp: Option<SsdpConfig>,
+}
+
+impl AppConfigData {
+    pub fn from_yaml_str(content: &str) -> Result<Self, String> {
+        let mut data: AppConfigData = serde_yaml::from_str(content)
+            .map_err(|e| format!("Invalid YAML configuration: {}", e))?;
+        data.normalize();
+        data.validate()?;
+        Ok(data)
+    }
+
+    pub fn normalize(&mut self) {
+        self.default_action = self.default_action.trim().to_lowercase();
+
+        let mut clean_ifaces = Vec::new();
+        for iface in &self.interfaces {
+            let trimmed = iface.trim();
+            if !trimmed.is_empty() && !clean_ifaces.iter().any(|x: &String| x == trimmed) {
+                clean_ifaces.push(trimmed.to_string());
+            }
+        }
+        self.interfaces = clean_ifaces;
+
+        if let Some(ref mut ws) = self.web_server {
+            ws.host = ws.host.trim().to_string();
+        }
+
+        if let Some(ref mut tc) = self.tracking {
+            tc.db_path = tc.db_path.trim().to_string();
+            if tc.db_path.is_empty() {
+                tc.db_path = default_db_path();
+            }
+            if let Some(days) = tc.history_retention_days.take() {
+                tc.retention_days = days;
+            }
+            if let Some(max_rec) = tc.max_history_records.take() {
+                tc.max_records = max_rec;
+            }
+        }
+
+        for rule in &mut self.rules {
+            rule.action = rule.action.trim().to_lowercase();
+            rule.src = rule.src.normalized();
+            rule.dst = rule.dst.normalized();
+            rule.services = rule.services.iter()
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect();
+            rule.hosts = rule.hosts.iter()
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect();
+        }
+
+        if let Some(ref mut ssdp) = self.ssdp {
+            let mut clean_ssdp_ifaces = Vec::new();
+            for iface in &ssdp.interfaces {
+                let trimmed = iface.trim();
+                if !trimmed.is_empty() && !clean_ssdp_ifaces.iter().any(|x: &String| x == trimmed) {
+                    clean_ssdp_ifaces.push(trimmed.to_string());
+                }
+            }
+            ssdp.interfaces = clean_ssdp_ifaces;
+
+            ssdp.default_action = ssdp
+                .default_action
+                .as_deref()
+                .map(|s| s.trim().to_lowercase())
+                .filter(|s| !s.is_empty());
+
+            let clean_opt_list = |opt: &Option<Vec<String>>| -> Option<Vec<String>> {
+                opt.as_ref().and_then(|list| {
+                    let mut cleaned = Vec::new();
+                    for item in list {
+                        let t = item.trim();
+                        if !t.is_empty() && !cleaned.iter().any(|x: &String| x == t) {
+                            cleaned.push(t.to_string());
+                        }
+                    }
+                    if cleaned.is_empty() { None } else { Some(cleaned) }
+                })
+            };
+
+            for rule in &mut ssdp.rules {
+                rule.action = rule.action.trim().to_lowercase();
+                rule.from = clean_opt_list(&rule.from);
+                rule.to = clean_opt_list(&rule.to);
+                rule.method = rule
+                    .method
+                    .as_deref()
+                    .map(|s| s.trim().to_ascii_uppercase())
+                    .filter(|s| !s.is_empty());
+                rule.st = rule
+                    .st
+                    .as_deref()
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty());
+                rule.usn = rule
+                    .usn
+                    .as_deref()
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty());
+            }
+        }
+    }
+
+    pub fn validate(&self) -> Result<(), String> {
+        if self.default_action != "forward" && self.default_action != "drop" {
+            return Err(format!(
+                "default_action must be 'forward' or 'drop', got '{}'",
+                self.default_action
+            ));
+        }
+
+        for iface in &self.interfaces {
+            if !is_valid_interface_name(iface) {
+                return Err(format!("Invalid network interface name: '{}'", iface));
+            }
+        }
+
+        if let Some(ref ws) = self.web_server {
+            if ws.host.trim().is_empty() {
+                return Err("web_server.host cannot be empty".to_string());
+            }
+            if ws.port == 0 {
+                return Err("web_server.port must be between 1 and 65535".to_string());
+            }
+        }
+
+        if let Some(ref tc) = self.tracking {
+            if tc.db_path.trim().is_empty() {
+                return Err("tracking.db_path cannot be empty".to_string());
+            }
+            if tc.flush_interval_seconds == 0 {
+                return Err("tracking.flush_interval_seconds must be at least 1".to_string());
+            }
+        }
+
+        for (idx, rule) in self.rules.iter().enumerate() {
+            let rule_num = idx + 1;
+            if rule.action != "forward" && rule.action != "drop" {
+                return Err(format!(
+                    "Rule #{}: action must be 'forward' or 'drop', got '{}'",
+                    rule_num, rule.action
+                ));
+            }
+            let validate_target = |target: &StringOrList, label: &str| -> Result<(), String> {
+                match target {
+                    StringOrList::String(s) => {
+                        if s != "*" && !is_valid_interface_name(s) {
+                            return Err(format!("Rule #{}: invalid {} interface '{}'", rule_num, label, s));
+                        }
+                    }
+                    StringOrList::List(list) => {
+                        if list.is_empty() {
+                            return Err(format!("Rule #{}: {} interface list cannot be empty", rule_num, label));
+                        }
+                        for s in list {
+                            if s != "*" && !is_valid_interface_name(s) {
+                                return Err(format!("Rule #{}: invalid {} interface '{}'", rule_num, label, s));
+                            }
+                        }
+                    }
+                }
+                Ok(())
+            };
+            validate_target(&rule.src, "src")?;
+            validate_target(&rule.dst, "dst")?;
+        }
+
+        if let Some(ref ssdp) = self.ssdp {
+            for iface in &ssdp.interfaces {
+                if !is_valid_interface_name(iface) {
+                    return Err(format!("Invalid SSDP network interface name: '{}'", iface));
+                }
+            }
+            if let Some(ref da) = ssdp.default_action {
+                if !matches!(da.as_str(), "forward" | "drop" | "allow" | "deny") {
+                    return Err(format!(
+                        "ssdp.default_action must be 'forward', 'drop', 'allow', or 'deny', got '{}'",
+                        da
+                    ));
+                }
+            }
+            for (idx, rule) in ssdp.rules.iter().enumerate() {
+                let rule_num = idx + 1;
+                if !matches!(rule.action.as_str(), "allow" | "deny" | "forward" | "drop") {
+                    return Err(format!(
+                        "SSDP Rule #{}: action must be 'allow', 'deny', 'forward', or 'drop', got '{}'",
+                        rule_num, rule.action
+                    ));
+                }
+                if let Some(ref m) = rule.method {
+                    if !matches!(m.as_str(), "*" | "M-SEARCH" | "NOTIFY" | "RESPONSE") {
+                        return Err(format!(
+                            "SSDP Rule #{}: method must be 'M-SEARCH', 'NOTIFY', 'RESPONSE', or '*', got '{}'",
+                            rule_num, m
+                        ));
+                    }
+                }
+                for (label, list_opt) in [("from", &rule.from), ("to", &rule.to)] {
+                    if let Some(list) = list_opt {
+                        for iface in list {
+                            if iface != "*" && !is_valid_interface_name(iface) {
+                                return Err(format!(
+                                    "SSDP Rule #{}: invalid {} interface '{}'",
+                                    rule_num, label, iface
+                                ));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    pub fn to_commented_yaml(&self) -> Result<String, String> {
+        let mut normalized = self.clone();
+        normalized.normalize();
+        normalized.validate()?;
+
+        let mut out = String::new();
+        out.push_str("# mdns-sieve Configuration File\n");
+        out.push_str("# This file defines how mDNS packets are filtered and routed between interfaces.\n\n");
+
+        out.push_str("# List of physical or virtual network interfaces available on the system.\n");
+        let ifaces_yaml = serde_yaml::to_string(&serde_json::json!({ "interfaces": normalized.interfaces }))
+            .map_err(|e| e.to_string())?;
+        out.push_str(&ifaces_yaml);
+        out.push('\n');
+
+        out.push_str("# The default action to take if no rules match a packet (\"forward\" or \"drop\").\n");
+        let default_action_yaml = serde_yaml::to_string(&serde_json::json!({ "default_action": normalized.default_action }))
+            .map_err(|e| e.to_string())?;
+        out.push_str(&default_action_yaml);
+        out.push('\n');
+
+        out.push_str("# Whether to rewrite packets that contain both questions and answers (default: false).\n");
+        let rewrite_yaml = serde_yaml::to_string(&serde_json::json!({ "rewrite_mixed_packets": normalized.rewrite_mixed_packets }))
+            .map_err(|e| e.to_string())?;
+        out.push_str(&rewrite_yaml);
+        out.push('\n');
+
+        out.push_str("# Whether to forward known-answers in query packets.\n");
+        let known_ans_yaml = serde_yaml::to_string(&serde_json::json!({ "forward_known_answers": normalized.forward_known_answers }))
+            .map_err(|e| e.to_string())?;
+        out.push_str(&known_ans_yaml);
+        out.push('\n');
+
+        if let Some(ref ws) = normalized.web_server {
+            out.push_str("# Configuration for the internal HTTP API and Web Dashboard server.\n");
+            let ws_yaml = serde_yaml::to_string(&serde_json::json!({ "web_server": ws }))
+                .map_err(|e| e.to_string())?;
+            out.push_str(&ws_yaml);
+            out.push('\n');
+        }
+
+        if let Some(ref tc) = normalized.tracking {
+            out.push_str("# Configuration for tracking mDNS message history in a local SQLite database.\n");
+            let tc_yaml = serde_yaml::to_string(&serde_json::json!({ "tracking": tc }))
+                .map_err(|e| e.to_string())?;
+            out.push_str(&tc_yaml);
+            out.push('\n');
+        }
+
+        out.push_str("# Filtering rules are processed in order; the first matching rule wins.\n");
+        let rules_yaml = serde_yaml::to_string(&serde_json::json!({ "rules": normalized.rules }))
+            .map_err(|e| e.to_string())?;
+        out.push_str(&rules_yaml);
+
+        if let Some(ref ssdp) = normalized.ssdp {
+            out.push('\n');
+            out.push_str("# Configuration for SSDP (239.255.255.250:1900) reflection across interfaces.\n");
+            let ssdp_yaml = serde_yaml::to_string(&serde_json::json!({ "ssdp": ssdp }))
+                .map_err(|e| e.to_string())?;
+            out.push_str(&ssdp_yaml);
+        }
+
+        Ok(out)
+    }
+
+    pub fn save_to_file<P: AsRef<Path>>(&self, path: P) -> Result<String, String> {
+        let path_ref = path.as_ref();
+        let yaml_content = self.to_commented_yaml()?;
+
+        // Verify the generated YAML parses cleanly back into AppConfigData
+        let _: AppConfigData = serde_yaml::from_str(&yaml_content)
+            .map_err(|e| format!("Failed round-trip validation of generated YAML: {}", e))?;
+
+        if let Some(parent) = path_ref.parent() {
+            if !parent.as_os_str().is_empty() && !parent.exists() {
+                fs::create_dir_all(parent)
+                    .map_err(|e| format!("Failed to create config directory {}: {}", parent.display(), e))?;
+            }
+        }
+
+        // Create backup (.bak) if original file exists
+        if path_ref.exists() {
+            let bak_path = path_ref.with_extension(
+                path_ref
+                    .extension()
+                    .map(|ext| format!("{}.bak", ext.to_string_lossy()))
+                    .unwrap_or_else(|| "bak".to_string()),
+            );
+            fs::copy(path_ref, &bak_path).map_err(|e| {
+                format!(
+                    "Failed to create backup file {}: {}",
+                    bak_path.display(),
+                    e
+                )
+            })?;
+        }
+
+        let tmp_path = path_ref.with_extension(
+            path_ref
+                .extension()
+                .map(|ext| format!("{}.tmp", ext.to_string_lossy()))
+                .unwrap_or_else(|| "tmp".to_string()),
+        );
+
+        fs::write(&tmp_path, &yaml_content).map_err(|e| {
+            format!(
+                "Failed to write temporary config file {}: {}",
+                tmp_path.display(),
+                e
+            )
+        })?;
+
+        if let Err(e) = fs::rename(&tmp_path, path_ref) {
+            // Fallback if rename fails across mount points
+            fs::copy(&tmp_path, path_ref).map_err(|copy_err| {
+                format!(
+                    "Failed to atomically replace config file {} ({}): {}",
+                    path_ref.display(),
+                    e,
+                    copy_err
+                )
+            })?;
+            let _ = fs::remove_file(&tmp_path);
+        }
+
+        Ok(yaml_content)
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -249,24 +760,71 @@ pub struct AppConfig {
     pub web_server: Option<WebServerConfig>,
     pub tracking: Option<TrackingConfig>,
     pub rules: Vec<FilterRule>,
+    pub ssdp_enabled: bool,
+    pub ssdp_interfaces: Vec<String>,
+    pub ssdp_default_action_is_forward: bool,
+    pub ssdp_rules: Vec<SsdpRule>,
 }
 
 impl AppConfig {
-    pub fn load_from_file<P: AsRef<Path>>(path: P) -> Result<Self, Box<dyn std::error::Error>> {
-        let content = fs::read_to_string(path)?;
-        let cfg_data: AppConfigData = serde_yaml::from_str(&content)?;
-        
+    pub fn from_data(cfg_data: &AppConfigData) -> Self {
         let rules = cfg_data.rules.iter().map(FilterRule::from_config).collect();
-        
-        Ok(Self {
-            interfaces: cfg_data.interfaces,
-            default_action_is_forward: cfg_data.default_action == "forward",
+        let default_action_is_forward = cfg_data.default_action == "forward";
+
+        let (ssdp_enabled, ssdp_interfaces, ssdp_default_action_is_forward, ssdp_rules) =
+            if let Some(ref ssdp) = cfg_data.ssdp {
+                let ssdp_default = ssdp
+                    .default_action
+                    .as_deref()
+                    .map(|a| matches!(a.trim().to_ascii_lowercase().as_str(), "allow" | "forward"))
+                    .unwrap_or(true);
+                let ssdp_rules = ssdp.rules.iter().map(SsdpRule::from_config).collect();
+                (ssdp.enabled, ssdp.interfaces.clone(), ssdp_default, ssdp_rules)
+            } else {
+                (false, Vec::new(), true, Vec::new())
+            };
+
+        Self {
+            interfaces: cfg_data.interfaces.clone(),
+            default_action_is_forward,
             rewrite_mixed_packets: cfg_data.rewrite_mixed_packets,
             forward_known_answers: cfg_data.forward_known_answers,
-            web_server: cfg_data.web_server,
-            tracking: cfg_data.tracking,
+            web_server: cfg_data.web_server.clone(),
+            tracking: cfg_data.tracking.clone(),
             rules,
-        })
+            ssdp_enabled,
+            ssdp_interfaces,
+            ssdp_default_action_is_forward,
+            ssdp_rules,
+        }
+    }
+
+    pub fn should_forward_ssdp(
+        &self,
+        pkt: &crate::ssdp::SsdpPacket,
+        src_iface: &str,
+        dst_iface: &str,
+    ) -> bool {
+        for rule in &self.ssdp_rules {
+            if rule.matches(pkt, src_iface, dst_iface) {
+                return rule.is_allow;
+            }
+        }
+        self.ssdp_default_action_is_forward
+    }
+
+    pub fn load_from_file_with_data<P: AsRef<Path>>(path: P) -> Result<(Self, AppConfigData), Box<dyn std::error::Error>> {
+        let content = fs::read_to_string(path)?;
+        let mut cfg_data: AppConfigData = serde_yaml::from_str(&content)?;
+        cfg_data.normalize();
+        let app_cfg = Self::from_data(&cfg_data);
+        Ok((app_cfg, cfg_data))
+    }
+
+    #[allow(dead_code)]
+    pub fn load_from_file<P: AsRef<Path>>(path: P) -> Result<Self, Box<dyn std::error::Error>> {
+        let (app_cfg, _) = Self::load_from_file_with_data(path)?;
+        Ok(app_cfg)
     }
 
     pub fn should_forward(
@@ -347,5 +905,170 @@ impl AppConfig {
         }
 
         self.default_action_is_forward
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn sample_config_data() -> AppConfigData {
+        AppConfigData {
+            interfaces: vec!["eth0".to_string(), "wlan0".to_string()],
+            default_action: "forward".to_string(),
+            rewrite_mixed_packets: true,
+            forward_known_answers: false,
+            web_server: Some(WebServerConfig {
+                enabled: true,
+                host: "0.0.0.0".to_string(),
+                port: 8080,
+            }),
+            tracking: Some(TrackingConfig {
+                enabled: true,
+                max_records: 50000,
+                db_path: "/var/lib/mdns-sieve/responses.db".to_string(),
+                flush_interval_seconds: 3600,
+                retention_days: 7,
+                history_retention_days: None,
+                max_history_records: None,
+            }),
+            rules: vec![FilterRuleConfig {
+                action: "drop".to_string(),
+                services: vec!["_googlecast._tcp.local".to_string()],
+                hosts: vec!["printer.local".to_string()],
+                src: StringOrList::String("wlan0".to_string()),
+                dst: StringOrList::String("*".to_string()),
+                section: RuleSection::Answers,
+            }],
+            ssdp: None,
+        }
+    }
+
+    #[test]
+    fn test_config_validation() {
+        let mut cfg = sample_config_data();
+        assert!(cfg.validate().is_ok());
+
+        cfg.default_action = "invalid".to_string();
+        assert!(cfg.validate().is_err());
+
+        cfg.default_action = "drop".to_string();
+        cfg.rules[0].action = "allow".to_string();
+        assert!(cfg.validate().is_err());
+
+        cfg.rules[0].action = "forward".to_string();
+        cfg.interfaces.push("bad/iface".to_string());
+        assert!(cfg.validate().is_err());
+    }
+
+    #[test]
+    fn test_atomic_save_and_backup() {
+        let nanos = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+        let path = std::env::temp_dir().join(format!("mdns_sieve_cfg_{}.yaml", nanos));
+        let bak_path = path.with_extension("yaml.bak");
+
+        let mut cfg = sample_config_data();
+        let yaml1 = cfg.save_to_file(&path).expect("First save should succeed");
+        assert!(path.exists());
+        assert!(!bak_path.exists());
+        assert!(yaml1.contains("# mdns-sieve Configuration File"));
+
+        // Modify and save again -> .bak should be created with previous contents
+        cfg.default_action = "drop".to_string();
+        cfg.rules.push(FilterRuleConfig {
+            action: "forward".to_string(),
+            services: vec!["*.local".to_string()],
+            hosts: vec![],
+            src: StringOrList::List(vec!["eth0".to_string(), "wlan0".to_string()]),
+            dst: StringOrList::String("*".to_string()),
+            section: RuleSection::Questions,
+        });
+        let _yaml2 = cfg.save_to_file(&path).expect("Second save should succeed");
+        assert!(bak_path.exists());
+        let bak_content = fs::read_to_string(&bak_path).unwrap();
+        assert_eq!(bak_content, yaml1);
+
+        let (_, loaded_data) = AppConfig::load_from_file_with_data(&path).expect("Should reload cleanly");
+        assert_eq!(loaded_data, cfg);
+        let loaded_app_cfg = AppConfig::load_from_file(&path).expect("load_from_file should succeed");
+        assert_eq!(loaded_app_cfg.rules.len(), 2);
+
+        let _ = fs::remove_file(&path);
+        let _ = fs::remove_file(&bak_path);
+    }
+
+    #[test]
+    fn test_discover_system_interfaces_from_dir() {
+        let nanos = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+        let dir = std::env::temp_dir().join(format!("mdns_sieve_net_{}", nanos));
+        fs::create_dir_all(dir.join("lo")).unwrap();
+        fs::create_dir_all(dir.join("eth0")).unwrap();
+        fs::create_dir_all(dir.join("wlan0")).unwrap();
+        fs::write(dir.join("eth0").join("operstate"), "up\n").unwrap();
+        fs::write(dir.join("wlan0").join("operstate"), "down\n").unwrap();
+
+        let discovered = discover_system_interfaces_from_dir(&dir);
+        assert_eq!(discovered.len(), 2);
+        assert_eq!(discovered[0].name, "eth0");
+        assert_eq!(discovered[0].operstate, "up");
+        assert_eq!(discovered[1].name, "wlan0");
+        assert_eq!(discovered[1].operstate, "down");
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_ssdp_config_validation_and_matching() {
+        let mut cfg = sample_config_data();
+        cfg.ssdp = Some(SsdpConfig {
+            enabled: true,
+            interfaces: vec![" eth0 ".to_string(), "eth0".to_string(), "wlan0".to_string()],
+            default_action: Some(" DROP ".to_string()),
+            rules: vec![SsdpRuleConfig {
+                action: " ALLOW ".to_string(),
+                from: Some(vec![" eth0 ".to_string()]),
+                to: Some(vec!["wlan0".to_string()]),
+                method: Some(" m-search ".to_string()),
+                st: Some(" urn:schemas-upnp-org:* ".to_string()),
+                usn: None,
+            }],
+        });
+
+        cfg.normalize();
+        assert!(cfg.validate().is_ok());
+        let ssdp = cfg.ssdp.as_ref().unwrap();
+        assert_eq!(ssdp.interfaces, vec!["eth0".to_string(), "wlan0".to_string()]);
+        assert_eq!(ssdp.default_action.as_deref(), Some("drop"));
+        assert_eq!(ssdp.rules[0].action, "allow");
+        assert_eq!(ssdp.rules[0].method.as_deref(), Some("M-SEARCH"));
+        assert_eq!(ssdp.rules[0].st.as_deref(), Some("urn:schemas-upnp-org:*"));
+
+        let app_cfg = AppConfig::from_data(&cfg);
+        assert!(app_cfg.ssdp_enabled);
+        assert!(!app_cfg.ssdp_default_action_is_forward);
+
+        let pkt_match = crate::ssdp::SsdpPacket {
+            method: crate::ssdp::SsdpMethod::MSearch,
+            st: Some("urn:schemas-upnp-org:device:MediaRenderer:1".to_string()),
+            nt: None,
+            nts: None,
+            usn: None,
+            location: None,
+            server: None,
+            mx: Some(3),
+            man: None,
+        };
+        assert!(app_cfg.should_forward_ssdp(&pkt_match, "eth0", "wlan0"));
+        assert!(!app_cfg.should_forward_ssdp(&pkt_match, "wlan0", "eth0"));
+
+        // Invalid SSDP method should fail validation
+        cfg.ssdp.as_mut().unwrap().rules[0].method = Some("INVALID".to_string());
+        assert!(cfg.validate().is_err());
+
+        // Invalid SSDP default_action should fail validation
+        cfg.ssdp.as_mut().unwrap().rules[0].method = Some("M-SEARCH".to_string());
+        cfg.ssdp.as_mut().unwrap().default_action = Some("bogus".to_string());
+        assert!(cfg.validate().is_err());
     }
 }

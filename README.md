@@ -111,7 +111,20 @@ Displays real-time KPI counters and trend lines showing total, forwarded, partia
 Provides a detailed, paginated log of received mDNS queries and responses:
 * **Granular Dispositions**: Color-coded indicator dots (Forwarded, Partially Forwarded, Dropped) at both the packet level and individual question/resource-record level, with tooltips showing ingress and routed destination interfaces.
 * **Expandable Packet Inspection**: Expand any message to inspect its individual questions and resource records (`Answer`, `Authority`, `Additional`), including decoded record data (`A`, `AAAA`, `PTR`, `SRV`, `TXT`, `CNAME`, `NS`, `NSEC`), TTLs, and copy-to-clipboard actions.
+* **One-Click Rule Creation (`+ Rule`)**: Draft a filtering rule directly from any question or resource record row in Message History, pre-populated with its source interface, record section, and service/host name.
 * **Multi-Facet Filtering**: Filter messages by query name, record name or data, source IP, ingress interface, destination interface, disposition, packet type, and time range.
+
+#### SSDP Reflector & History Explorer
+Optionally reflects SSDP discovery (`M-SEARCH`, `NOTIFY`, and unicast `200 OK` / `RESPONSE` replies) on `239.255.255.250:1900` across configured interfaces:
+* **Rule-Based Filtering**: Filter SSDP traffic by `action` (`allow`/`deny`), `method` (`M-SEARCH`, `NOTIFY`, `RESPONSE`), `from`/`to` interfaces, and wildcard `st` / `usn` patterns.
+* **SSDP History View**: Paginated log of SSDP packets with expandable header inspection (`ST`/`NT`, `USN`, `Location`), multi-facet filtering, and one-click `+ Rule` creation.
+
+#### Visual Configuration Manager & Live Hot-Reload
+Manage the entire `mdns-sieve` configuration directly from the **Configuration** tab in the Web GUI:
+* **System Interface Discovery**: Auto-detects host network interfaces from `/sys/class/net` with live `UP`/`DOWN` status badges, alongside support for custom VLAN/bridge interface names.
+* **Visual Filtering Rule Builder**: Create, edit, duplicate, and reorder rules via drag-and-drop or arrow controls with tag/chip editors for `services` and `hosts` wildcard patterns.
+* **Raw YAML Preview & Import**: Inspect generated commented YAML, download a copy, or paste/edit raw YAML directly.
+* **Atomic Persistence & Hot-Reload**: Saving writes an atomic `.bak` backup of the previous configuration file and hot-reloads interfaces, global policies, filtering rules, and database tracking in memory without restarting the daemon.
 
 #### Telemetry & SQLite Persistence
 When tracking is enabled, the daemon persists traffic metrics to an SQLite database (default: `/var/lib/mdns-sieve/responses.db`).
@@ -129,6 +142,7 @@ GUI controls allowing users to reset dashboard counters and purge SQLite trackin
 This repository is organized as follows:
 * `rs/` — Rust package (Core reflector daemon, internal JSON API, and Web GUI).
   * `src/mdns/` — Custom binary mDNS parser with recursion pointer protection.
+  * `src/ssdp/` — HTTPMU SSDP packet parser and cross-interface reflector (`239.255.255.250:1900`).
   * `src/config.rs` — YAML configuration rule validation and matching engine.
   * `src/reflector.rs` — Linux `SO_BINDTODEVICE` isolated sockets and recovery event loop.
   * `src/database.rs` — SQLite DatabaseManager for metrics persistence and automated pruning.
