@@ -20,10 +20,10 @@ The project is built using Cargo in the `rs/` directory. Alpine APKs are package
 ```
 
 ### GitHub Actions CI / Release
-Automated cross-compilation and Alpine packaging workflows are defined in `.github/workflows/build.yml`.
-- Builds packages for `x86_64` and `aarch64` architectures.
-- Triggered manually via `workflow_dispatch` or on version tags (`v*`).
-- Generates Draft GitHub Releases when a tag is pushed.
+Automated testing, cross-compilation, and Alpine packaging workflows are defined in `.github/workflows/`:
+- `_build.yml`: Reusable workflow (`workflow_call`) that runs `./rs/cargo.sh test` and builds/packages `x86_64` and `aarch64` artifacts.
+- `release.yml`: Triggered manually via `workflow_dispatch` or on version tags (`v*`); generates Draft GitHub Releases when a tag is pushed.
+- `nightly.yml`: Triggered daily at `02:00 UTC` (skipping if `main` has no new commits since the `nightly` tag) or manually via `workflow_dispatch`; updates the rolling `nightly` tag and prerelease (`make_latest: false`).
 - Uses `PACKAGING_RSA_KEY` secret if configured in GitHub repository secrets, falling back to ephemeral keys if omitted.
 
 ### Deployment

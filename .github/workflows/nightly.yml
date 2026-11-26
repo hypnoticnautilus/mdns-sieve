@@ -1,0 +1,97 @@
+name: Nightly Build
+
+on:
+  schedule:
+    - cron: '0 2 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: nightly-build
+  cancel-in-progress: false
+
+jobs:
+  check:
+    name: Check for New Commits
+    runs-on: ubuntu-latest
+    outputs:
+      should_run: ${{ steps.check.outputs.should_run }}
+    steps:
+      - name: Checkout main
+        uses: actions/checkout@v5
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Compare HEAD with nightly tag
+        id: check
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "Manual dispatch: running nightly build unconditionally."
+            echo "should_run=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          HEAD_SHA="$(git rev-parse HEAD)"
+          if git rev-parse --verify --quiet "refs/tags/nightly^{commit}" >/dev/null; then
+            NIGHTLY_SHA="$(git rev-parse "refs/tags/nightly^{commit}")"
+            if [ "$HEAD_SHA" = "$NIGHTLY_SHA" ]; then
+              echo "No new commits on main since last nightly build ($HEAD_SHA). Skipping."
+              echo "should_run=false" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+          fi
+
+          echo "New commits detected on main ($HEAD_SHA). Proceeding with nightly build."
+          echo "should_run=true" >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: check
+    if: needs.check.outputs.should_run == 'true'
+    uses: ./.github/workflows/_build.yml
+    secrets: inherit
+
+  release:
+    name: Publish Nightly Prerelease
+    needs: [check, build]
+    if: needs.check.outputs.should_run == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout main
+        uses: actions/checkout@v5
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Download all built artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: release-artifacts
+
+      - name: Prepare release assets
+        run: |
+          mkdir -p release-files
+          find release-artifacts -type f -exec cp -n {} release-files/ \;
+          echo "Files to be attached to nightly release:"
+          ls -la release-files
+
+      - name: Update nightly tag
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -f nightly "${{ github.sha }}"
+          git push -f origin nightly
+
+      - name: Publish Rolling Nightly Prerelease
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: nightly
+          name: Nightly Build
+          body: |
+            Automated nightly prerelease built from `main` (`${{ github.sha }}`).
+          draft: false
+          prerelease: true
+          make_latest: false
+          files: release-files/*
