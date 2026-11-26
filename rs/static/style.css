@@ -1135,7 +1135,7 @@ td:hover .copy-name-btn {
 
 .history-search-grid {
   display: grid;
-  grid-template-columns: 1fr 1fr 220px auto;
+  grid-template-columns: 1fr 240px auto;
   gap: 10px;
   width: 100%;
   align-items: center;
@@ -1303,7 +1303,9 @@ td:hover .copy-name-btn {
 /* History Table */
 .history-table-container {
   overflow-x: auto;
-  max-height: 650px;
+  overflow-y: visible;
+  max-height: none;
+  flex: none;
 }
 
 .history-table {
@@ -1394,6 +1396,7 @@ td:hover .copy-name-btn {
   font-size: 11px;
   font-weight: 600;
   text-transform: uppercase;
+  white-space: nowrap;
 }
 
 .badge-type.query {

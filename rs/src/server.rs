@@ -9,7 +9,7 @@ use axum::{
 };
 
 use serde_json::{Value, json};
-use crate::database::{DatabaseManager, Disposition, MessageRecord, HistoryFilterParams};
+use crate::database::{DatabaseManager, Disposition, MessageRecord, HistoryFilterParams, SsdpHistoryFilterParams};
 use crate::config::{
     AppConfig, AppConfigData, WebServerConfig, TrackingConfig, discover_system_interfaces,
 };
@@ -359,6 +359,14 @@ async fn serve_favicon() -> impl IntoResponse {
 struct SsdpHistoryQuery {
     page: Option<usize>,
     limit: Option<usize>,
+    content_search: Option<String>,
+    src_ip: Option<String>,
+    src_interface: Option<String>,
+    dst_interface: Option<String>,
+    disposition: Option<u8>,
+    method: Option<String>,
+    from_time: Option<f64>,
+    to_time: Option<f64>,
 }
 
 async fn api_ssdp_history(
@@ -366,22 +374,44 @@ async fn api_ssdp_history(
     Query(params): Query<SsdpHistoryQuery>,
 ) -> impl IntoResponse {
     let page = params.page.unwrap_or(1).max(1);
-    let limit = params.limit.unwrap_or(50).clamp(1, 500);
-    let mgr_guard = mgr.lock().await;
-    if let Some(ref db) = mgr_guard.db_manager {
-        let (items, total) = db.get_ssdp_history(page, limit);
+    let limit = params.limit.unwrap_or(50).clamp(1, 200);
+    let (db_opt, interfaces) = {
+        let mgr_guard = mgr.lock().await;
+        (mgr_guard.db_manager.clone(), mgr_guard.configured_interfaces.clone())
+    };
+    if let Some(db) = db_opt {
+        let filters = SsdpHistoryFilterParams {
+            page: Some(page),
+            limit: Some(limit),
+            content_search: params.content_search,
+            src_ip: params.src_ip,
+            src_interface: params.src_interface,
+            dst_interface: params.dst_interface,
+            disposition: params.disposition,
+            method: params.method,
+            from_time: params.from_time,
+            to_time: params.to_time,
+        };
+        let (items, total) = tokio::task::spawn_blocking(move || db.get_ssdp_history(&filters))
+            .await
+            .unwrap_or_default();
+        let total_pages = (total + limit - 1) / limit.max(1);
         return Json(serde_json::json!({
             "items": items,
             "total": total,
             "page": page,
-            "limit": limit
+            "limit": limit,
+            "total_pages": total_pages.max(1),
+            "interfaces": interfaces
         })).into_response();
     }
     Json(serde_json::json!({
         "items": [],
         "total": 0,
         "page": page,
-        "limit": limit
+        "limit": limit,
+        "total_pages": 1,
+        "interfaces": interfaces
     })).into_response()
 }
 
@@ -436,6 +466,7 @@ pub struct HistoryQueryRequest {
     pub packet_type: Option<u8>,
     pub query_search: Option<String>,
     pub response_search: Option<String>,
+    pub content_search: Option<String>,
     pub from_time: Option<f64>,
     pub to_time: Option<f64>,
 }
@@ -461,6 +492,7 @@ async fn api_history(
             packet_type: query.packet_type,
             query_search: query.query_search,
             response_search: query.response_search,
+            content_search: query.content_search,
             from_time: query.from_time,
             to_time: query.to_time,
         };

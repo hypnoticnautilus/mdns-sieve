@@ -327,31 +327,24 @@ function updateInterfaceDropdowns(interfacesList) {
 
   const sorted = Array.from(knownInterfaces).sort();
 
-  const srcSelect = document.getElementById('historyInterfaceFilter');
-  if (srcSelect) {
-    const currentVal = srcSelect.value;
-    srcSelect.innerHTML = '<option value="">All Ingress Interfaces</option>';
+  const populateSelect = (id, prefix, defaultText) => {
+    const el = document.getElementById(id);
+    if (!el) return;
+    const currentVal = el.value;
+    el.innerHTML = `<option value="">${defaultText}</option>`;
     sorted.forEach(iface => {
       const opt = document.createElement('option');
       opt.value = iface;
-      opt.textContent = `Ingress: ${iface}`;
+      opt.textContent = `${prefix}: ${iface}`;
       if (iface === currentVal) opt.selected = true;
-      srcSelect.appendChild(opt);
+      el.appendChild(opt);
     });
-  }
+  };
 
-  const dstSelect = document.getElementById('historyDstInterfaceFilter');
-  if (dstSelect) {
-    const currentVal = dstSelect.value;
-    dstSelect.innerHTML = '<option value="">All Destination Interfaces</option>';
-    sorted.forEach(iface => {
-      const opt = document.createElement('option');
-      opt.value = iface;
-      opt.textContent = `Forwarded To: ${iface}`;
-      if (iface === currentVal) opt.selected = true;
-      dstSelect.appendChild(opt);
-    });
-  }
+  populateSelect('historyInterfaceFilter', 'Ingress', 'All Ingress Interfaces');
+  populateSelect('historyDstInterfaceFilter', 'Forwarded To', 'All Destination Interfaces');
+  populateSelect('ssdpInterfaceFilter', 'Ingress', 'All Ingress Interfaces');
+  populateSelect('ssdpDstInterfaceFilter', 'Forwarded To', 'All Destination Interfaces');
 }
 
 async function refreshData() {
@@ -373,6 +366,8 @@ async function refreshData() {
 
     if (currentMainView === 'history') {
       await loadHistoryData(currentHistoryPage, true);
+    } else if (currentMainView === 'ssdp') {
+      await loadSsdpHistory(currentSsdpPage, true);
     }
 
     const statusLabel = document.getElementById('infoDaemonStatus');
@@ -641,6 +636,8 @@ async function executeClearStats() {
 
       if (clearTracking && currentMainView === 'history') {
         loadHistoryData(1);
+      } else if (clearTracking && currentMainView === 'ssdp') {
+        loadSsdpHistory(1);
       }
 
       refreshData();
@@ -679,7 +676,7 @@ function switchMainView(view) {
   if (view === 'history') {
     loadHistoryData(currentHistoryPage);
   } else if (view === 'ssdp') {
-    loadSsdpHistory(1);
+    loadSsdpHistory(currentSsdpPage);
   } else if (view === 'config') {
     ensureConfigViewInitialized();
   }
@@ -687,39 +684,337 @@ function switchMainView(view) {
   lucide.createIcons();
 }
 
-async function loadSsdpHistory(page = 1) {
-  const tbody = document.getElementById('ssdpHistoryTableBody');
-  const totalBadge = document.getElementById('ssdpTotalCount');
-  if (!tbody) return;
-  try {
-    const res = await fetch(`/api/ssdp/history?page=${page}&limit=50`);
-    const data = await res.json();
-    if (totalBadge) totalBadge.textContent = `${data.total || 0} records`;
-    const items = data.items || [];
-    if (items.length === 0) {
-      tbody.innerHTML = '<tr><td colspan="9" class="text-center">No SSDP messages recorded yet.</td></tr>';
-      return;
-    }
-    const dispLabel = (d) => d === 0 ? '<span class="badge badge-success">Forwarded</span>'
-      : d === 1 ? '<span class="badge badge-warning">Partial</span>'
-      : '<span class="badge badge-danger">Dropped</span>';
-    tbody.innerHTML = items.map(item => {
-      const ts = new Date(item.timestamp * 1000).toLocaleTimeString();
-      return `<tr>
-        <td>${ts}</td>
-        <td><code>${item.src_ip}</code></td>
-        <td>${item.src_interface}</td>
-        <td><strong>${item.method}</strong></td>
-        <td>${item.st || '-'}</td>
-        <td>${item.usn || '-'}</td>
-        <td>${dispLabel(item.disposition)}</td>
-        <td>${(item.forwarded_interfaces || []).join(', ') || '-'}</td>
-        <td>${(item.dropped_interfaces || []).join(', ') || '-'}</td>
-      </tr>`;
-    }).join('');
-  } catch (e) {
-    tbody.innerHTML = `<tr><td colspan="9" class="text-center">Failed to load SSDP history: ${e}</td></tr>`;
+/* ==========================================================================
+   SSDP History Logic & Rendering
+   ========================================================================== */
+let currentSsdpPage = 1;
+let totalSsdpPages = 1;
+let expandedSsdpIds = new Set();
+let currentSsdpRecords = [];
+
+function ssdpDispToMdns(disp) {
+  if (disp === 0) return 1; // Forwarded
+  if (disp === 1) return 2; // Partially Forwarded
+  return 0;                 // Dropped
+}
+
+function onSsdpPresetChange() {
+  const preset = document.getElementById('ssdpTimePreset').value;
+  const customRow = document.getElementById('ssdpCustomTimeRow');
+  if (preset === 'custom') {
+    customRow.classList.remove('hidden');
+  } else {
+    customRow.classList.add('hidden');
+    loadSsdpHistory(1);
   }
+}
+
+function getSsdpTimeRange() {
+  const preset = document.getElementById('ssdpTimePreset').value;
+  const now = Date.now() / 1000;
+
+  if (preset === '15m') return { from: now - 15 * 60, to: null };
+  if (preset === '1h') return { from: now - 3600, to: null };
+  if (preset === '24h') return { from: now - 86400, to: null };
+  if (preset === '7d') return { from: now - 7 * 86400, to: null };
+  if (preset === 'all') return { from: null, to: null };
+  if (preset === 'custom') {
+    const fromVal = document.getElementById('ssdpTimeFrom').value;
+    const toVal = document.getElementById('ssdpTimeTo').value;
+    const from = fromVal ? new Date(fromVal).getTime() / 1000 : null;
+    const to = toVal ? new Date(toVal).getTime() / 1000 : null;
+    return { from, to };
+  }
+  return { from: now - 7 * 86400, to: null };
+}
+
+function resetSsdpFilters() {
+  document.getElementById('ssdpContentSearch').value = '';
+  document.getElementById('ssdpSrcIpFilter').value = '';
+  document.getElementById('ssdpInterfaceFilter').value = '';
+  document.getElementById('ssdpDstInterfaceFilter').value = '';
+  document.getElementById('ssdpDispositionFilter').value = '';
+  document.getElementById('ssdpMethodFilter').value = '';
+  document.getElementById('ssdpTimePreset').value = '7d';
+  document.getElementById('ssdpCustomTimeRow').classList.add('hidden');
+  document.getElementById('ssdpTimeFrom').value = '';
+  document.getElementById('ssdpTimeTo').value = '';
+  loadSsdpHistory(1);
+}
+
+function ssdpGoToPage(page) {
+  if (page < 1 || page > totalSsdpPages) return;
+  loadSsdpHistory(page);
+}
+
+function toggleSsdpExpand(recordId, e) {
+  if (e) e.stopPropagation();
+  if (expandedSsdpIds.has(recordId)) {
+    expandedSsdpIds.delete(recordId);
+  } else {
+    expandedSsdpIds.add(recordId);
+  }
+  renderSsdpTableRows();
+}
+
+async function loadSsdpHistory(page = 1, silent = false) {
+  currentSsdpPage = page;
+  const pageSize = parseInt(document.getElementById('ssdpPageSize')?.value || '50', 10);
+  const contentSearch = document.getElementById('ssdpContentSearch')?.value.trim() || '';
+  const srcIp = document.getElementById('ssdpSrcIpFilter')?.value.trim() || '';
+  const srcIface = document.getElementById('ssdpInterfaceFilter')?.value || '';
+  const dstIface = document.getElementById('ssdpDstInterfaceFilter')?.value || '';
+  const disposition = document.getElementById('ssdpDispositionFilter')?.value ?? '';
+  const method = document.getElementById('ssdpMethodFilter')?.value || '';
+  const { from, to } = getSsdpTimeRange();
+
+  const tbody = document.getElementById('ssdpHistoryTableBody');
+  if (!tbody) return;
+  if (!silent && currentSsdpRecords.length === 0) {
+    tbody.innerHTML = '<tr><td colspan="9" class="table-empty">Loading SSDP message history...</td></tr>';
+  }
+
+  let url = `/api/ssdp/history?page=${page}&limit=${pageSize}`;
+  if (contentSearch) url += `&content_search=${encodeURIComponent(contentSearch)}`;
+  if (srcIp) url += `&src_ip=${encodeURIComponent(srcIp)}`;
+  if (srcIface) url += `&src_interface=${encodeURIComponent(srcIface)}`;
+  if (dstIface) url += `&dst_interface=${encodeURIComponent(dstIface)}`;
+  if (disposition !== '') url += `&disposition=${encodeURIComponent(disposition)}`;
+  if (method) url += `&method=${encodeURIComponent(method)}`;
+  if (from !== null && !isNaN(from)) url += `&from_time=${from}`;
+  if (to !== null && !isNaN(to)) url += `&to_time=${to}`;
+
+  try {
+    const res = await fetch(url);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = await res.json();
+    if (data.interfaces) {
+      updateInterfaceDropdowns(data.interfaces);
+    }
+    currentSsdpRecords = data.items || [];
+    const total = data.total || 0;
+    totalSsdpPages = data.total_pages || Math.max(1, Math.ceil(total / pageSize));
+
+    renderSsdpTable(total, page, pageSize);
+  } catch (e) {
+    tbody.innerHTML = `<tr><td colspan="9" class="table-empty">Failed to load SSDP history: ${escapeHtml(e.message || e)}</td></tr>`;
+  }
+}
+
+function renderSsdpTable(total, page, pageSize) {
+  const startIdx = total === 0 ? 0 : (page - 1) * pageSize + 1;
+  const endIdx = Math.min(page * pageSize, total);
+  document.getElementById('ssdpPaginationInfo').textContent = `Showing ${startIdx.toLocaleString()} - ${endIdx.toLocaleString()} of ${total.toLocaleString()} messages`;
+  document.getElementById('ssdpPageIndicator').textContent = `Page ${page} of ${totalSsdpPages}`;
+
+  document.getElementById('btnSsdpFirst').disabled = page <= 1;
+  document.getElementById('btnSsdpPrev').disabled = page <= 1;
+  document.getElementById('btnSsdpNext').disabled = page >= totalSsdpPages;
+  document.getElementById('btnSsdpLast').disabled = page >= totalSsdpPages;
+
+  renderSsdpTableRows();
+}
+
+function renderSsdpTableRows() {
+  const tbody = document.getElementById('ssdpHistoryTableBody');
+  if (!tbody) return;
+  tbody.innerHTML = '';
+
+  if (currentSsdpRecords.length === 0) {
+    tbody.innerHTML = '<tr><td colspan="9" class="table-empty">No matching SSDP messages found.</td></tr>';
+    return;
+  }
+
+  currentSsdpRecords.forEach((item, index) => {
+    const recordId = item.id !== undefined && item.id !== null ? item.id : index;
+    const isExpanded = expandedSsdpIds.has(recordId);
+    const fwdArr = Array.isArray(item.forwarded_interfaces) ? item.forwarded_interfaces : [];
+    const dropArr = Array.isArray(item.dropped_interfaces) ? item.dropped_interfaces : [];
+    const fwdStr = fwdArr.join(',');
+    const dropStr = dropArr.join(',');
+    const mdnsDisp = ssdpDispToMdns(item.disposition);
+
+    const d = new Date(item.timestamp * 1000);
+    const timeFormatted = d.toLocaleDateString() + ' ' + d.toLocaleTimeString();
+
+    const msgDotHtml = renderDispositionDot(mdnsDisp, fwdStr, dropStr, false);
+    const methodCss = item.method === 'M-SEARCH' ? 'query' : 'response';
+
+    const dstBadges = fwdArr.length > 0
+      ? fwdArr.map(x => `<span class="route-badge-fwd" title="Forwarded to ${escapeHtml(x)}">${escapeHtml(x)}</span>`).join(' ')
+      : '<span style="color: var(--text-muted); font-size: 11px;">None</span>';
+
+    const previewPills = [];
+    if (item.st) {
+      previewPills.push(`<span class="preview-item-pill">${msgDotHtml}<span class="preview-item-text" title="ST / NT: ${escapeHtml(item.st)}">ST: ${escapeHtml(item.st)}</span></span>`);
+    }
+    if (item.usn) {
+      previewPills.push(`<span class="preview-item-pill"><span class="preview-item-text" title="USN: ${escapeHtml(item.usn)}">USN: ${escapeHtml(item.usn)}</span></span>`);
+    }
+    const previewHtml = previewPills.length > 0
+      ? `<div class="preview-items-wrap">${previewPills.join('')}</div>`
+      : '<span style="color: var(--text-muted); font-size: 12px;">-</span>';
+
+    const tr = document.createElement('tr');
+    tr.className = `history-row ${isExpanded ? 'expanded' : ''}`;
+    tr.onclick = (e) => toggleSsdpExpand(recordId, e);
+
+    tr.innerHTML = `
+      <td>
+        <span class="history-expand-icon">
+          <i data-lucide="${isExpanded ? 'chevron-down' : 'chevron-right'}"></i>
+        </span>
+      </td>
+      <td style="text-align: center;">${msgDotHtml}</td>
+      <td title="${item.timestamp} (UNIX)">${timeFormatted}</td>
+      <td><strong>${escapeHtml(item.src_ip)}</strong></td>
+      <td><span class="badge" style="font-size: 11px;">${escapeHtml(item.src_interface)}</span></td>
+      <td><span class="badge-type ${methodCss}">${escapeHtml(item.method)}</span></td>
+      <td><div style="display: flex; gap: 4px; flex-wrap: wrap;">${dstBadges}</div></td>
+      <td>${previewHtml}</td>
+      <td style="text-align: right;">
+        <button class="btn-quick-rule" title="Create SSDP filtering rule from this message"
+          data-src="${escapeHtml(item.src_interface)}"
+          data-disp="${item.disposition}"
+          data-method="${escapeHtml(item.method)}"
+          data-st="${escapeHtml(item.st || '')}"
+          data-usn="${escapeHtml(item.usn || '')}"
+          onclick="createQuickRuleFromSsdpHistory(this, event)">
+          <i data-lucide="plus"></i>
+          <span>Rule</span>
+        </button>
+      </td>
+    `;
+    tbody.appendChild(tr);
+
+    if (isExpanded) {
+      const detailTr = document.createElement('tr');
+      detailTr.className = 'history-detail-tr';
+      const msgDispInfo = dispositionInfo(mdnsDisp, fwdStr, dropStr);
+
+      const copyField = (val, label) => val
+        ? `<div class="service-name-wrapper">
+             <span style="word-break: break-all;">${escapeHtml(val)}</span>
+             <button class="copy-name-btn" title="Copy ${escapeHtml(label)}" data-copy="${escapeHtml(val)}" onclick="copyToClipboard(this, event)">
+               <i data-lucide="copy"></i>
+             </button>
+           </div>`
+        : '<span style="color: var(--text-muted);">-</span>';
+
+      detailTr.innerHTML = `
+        <td colspan="9">
+          <div class="history-detail-content">
+            <div class="routing-summary-box">
+              <div class="routing-summary-item">
+                <span class="routing-summary-label">Disposition:</span>
+                ${msgDotHtml}
+                <strong>${escapeHtml(msgDispInfo.label)}</strong>
+              </div>
+              <div class="routing-summary-item">
+                <span class="routing-summary-label">Source:</span>
+                <span><strong>${escapeHtml(item.src_ip)}</strong> on <code>${escapeHtml(item.src_interface)}</code></span>
+              </div>
+              <div class="routing-summary-item">
+                <span class="routing-summary-label">Interface Routing:</span>
+                <div style="display: flex; gap: 4px; flex-wrap: wrap;">${renderRoutingBadges(fwdStr, dropStr)}</div>
+              </div>
+              <div class="routing-summary-item">
+                <span class="routing-summary-label">Exact Timestamp:</span>
+                <code>${item.timestamp}</code>
+              </div>
+            </div>
+
+            <div class="detail-card">
+              <div class="detail-card-title">
+                <i data-lucide="radio" style="width: 14px; height: 14px;"></i>
+                <span>SSDP Packet Headers</span>
+              </div>
+              <table class="detail-card-table">
+                <thead>
+                  <tr>
+                    <th style="width: 140px;">Header</th>
+                    <th>Value</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr>
+                    <td><strong>Method</strong></td>
+                    <td><span class="badge-type ${methodCss}">${escapeHtml(item.method)}</span></td>
+                  </tr>
+                  <tr>
+                    <td><strong>ST / NT</strong></td>
+                    <td>${copyField(item.st, 'ST / NT')}</td>
+                  </tr>
+                  <tr>
+                    <td><strong>USN</strong></td>
+                    <td>${copyField(item.usn, 'USN')}</td>
+                  </tr>
+                  <tr>
+                    <td><strong>Location</strong></td>
+                    <td>${copyField(item.location, 'Location')}</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </td>
+      `;
+      tbody.appendChild(detailTr);
+    }
+  });
+
+  lucide.createIcons();
+}
+
+async function createQuickRuleFromSsdpHistory(btnEl, event) {
+  if (event) event.stopPropagation();
+  if (!btnEl) return;
+
+  const srcIface = btnEl.getAttribute('data-src') || '';
+  const disp = Number(btnEl.getAttribute('data-disp') || 0);
+  const method = (btnEl.getAttribute('data-method') || '').trim();
+  const st = (btnEl.getAttribute('data-st') || '').trim();
+  const usn = (btnEl.getAttribute('data-usn') || '').trim();
+
+  if (!configInitialized) {
+    configInitialized = true;
+    await Promise.all([loadConfigFromServer(), loadSystemInterfaces()]);
+  }
+
+  if (!draftConfigData) return;
+  if (!draftConfigData.ssdp) {
+    draftConfigData.ssdp = { enabled: false, interfaces: [], default_action: 'forward', rules: [] };
+  }
+  if (!Array.isArray(draftConfigData.ssdp.rules)) {
+    draftConfigData.ssdp.rules = [];
+  }
+
+  // Toggle opposite action: 2 = Dropped -> allow, otherwise deny
+  const targetAction = disp === 2 ? 'allow' : 'deny';
+  const draftRule = {
+    action: targetAction,
+    method: method || null,
+    from: srcIface ? [srcIface] : null,
+    to: null,
+    st: st || null,
+    usn: usn || null,
+  };
+
+  draftConfigData.ssdp.rules.unshift(draftRule);
+  renderSsdpConfigSection();
+  updateDirtyStateUI();
+  switchMainView('config');
+  showConfigFeedback(
+    'info',
+    `Drafted a new SSDP ${targetAction.toUpperCase()} rule #1 for "${st || usn || method || '*'}" from ${srcIface || '*'}. Click "Save & Apply" to activate.`
+  );
+
+  setTimeout(() => {
+    const container = document.getElementById('cfgSsdpRulesContainer');
+    if (container) {
+      container.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    }
+  }, 100);
 }
 
 /* ==========================================================================
@@ -761,8 +1056,7 @@ function getHistoryTimeRange() {
 }
 
 function resetHistoryFilters() {
-  document.getElementById('historyQuerySearch').value = '';
-  document.getElementById('historyResponseSearch').value = '';
+  document.getElementById('historyContentSearch').value = '';
   document.getElementById('historySrcIpFilter').value = '';
   document.getElementById('historyInterfaceFilter').value = '';
   document.getElementById('historyDstInterfaceFilter').value = '';
@@ -783,8 +1077,7 @@ function historyGoToPage(page) {
 async function loadHistoryData(page = 1, silent = false) {
   currentHistoryPage = page;
   const pageSize = parseInt(document.getElementById('historyPageSize')?.value || '50', 10);
-  const querySearch = document.getElementById('historyQuerySearch')?.value.trim() || '';
-  const responseSearch = document.getElementById('historyResponseSearch')?.value.trim() || '';
+  const contentSearch = document.getElementById('historyContentSearch')?.value.trim() || '';
   const srcIp = document.getElementById('historySrcIpFilter')?.value.trim() || '';
   const srcIface = document.getElementById('historyInterfaceFilter')?.value || '';
   const dstIface = document.getElementById('historyDstInterfaceFilter')?.value || '';
@@ -798,8 +1091,7 @@ async function loadHistoryData(page = 1, silent = false) {
   }
 
   let url = `/api/history?page=${page}&limit=${pageSize}`;
-  if (querySearch) url += `&query_search=${encodeURIComponent(querySearch)}`;
-  if (responseSearch) url += `&response_search=${encodeURIComponent(responseSearch)}`;
+  if (contentSearch) url += `&content_search=${encodeURIComponent(contentSearch)}`;
   if (srcIp) url += `&src_ip=${encodeURIComponent(srcIp)}`;
   if (srcIface) url += `&src_interface=${encodeURIComponent(srcIface)}`;
   if (dstIface) url += `&dst_interface=${encodeURIComponent(dstIface)}`;

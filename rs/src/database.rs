@@ -90,6 +90,20 @@ pub struct SsdpHistoryItem {
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
+pub struct SsdpHistoryFilterParams {
+    pub page: Option<usize>,
+    pub limit: Option<usize>,
+    pub content_search: Option<String>,
+    pub src_ip: Option<String>,
+    pub src_interface: Option<String>,
+    pub dst_interface: Option<String>,
+    pub disposition: Option<u8>,
+    pub method: Option<String>,
+    pub from_time: Option<f64>,
+    pub to_time: Option<f64>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
 pub struct HistoryFilterParams {
     pub page: Option<usize>,
     pub limit: Option<usize>,
@@ -100,6 +114,7 @@ pub struct HistoryFilterParams {
     pub packet_type: Option<u8>,
     pub query_search: Option<String>,
     pub response_search: Option<String>,
+    pub content_search: Option<String>,
     pub from_time: Option<f64>,
     pub to_time: Option<f64>,
 }
@@ -344,6 +359,15 @@ impl DatabaseManager {
                 sql_params.push(SqlValue::Text(pattern));
             }
         }
+        if let Some(ref c_search) = filters.content_search {
+            let s = c_search.trim();
+            if !s.is_empty() {
+                let pattern = format!("%{}%", escape_like(s));
+                conditions.push("EXISTS (SELECT 1 FROM message_items mi WHERE mi.message_id = m.id AND (mi.name LIKE ? ESCAPE '\\' OR COALESCE(mi.rdata_summary, '') LIKE ? ESCAPE '\\'))".to_string());
+                sql_params.push(SqlValue::Text(pattern.clone()));
+                sql_params.push(SqlValue::Text(pattern));
+            }
+        }
 
         let where_clause = if conditions.is_empty() {
             String::new()
@@ -517,21 +541,92 @@ impl DatabaseManager {
         }
     }
 
-    pub fn get_ssdp_history(&self, page: usize, limit: usize) -> (Vec<SsdpHistoryItem>, usize) {
+    pub fn get_ssdp_history(&self, filters: &SsdpHistoryFilterParams) -> (Vec<SsdpHistoryItem>, usize) {
         let mut items = Vec::new();
         let mut total = 0usize;
         if let Ok(conn) = self.get_connection() {
-            if let Ok(cnt) = conn.query_row("SELECT COUNT(*) FROM ssdp_messages", [], |row| row.get::<_, i64>(0)) {
-                total = cnt.max(0) as usize;
+            let mut conditions = Vec::new();
+            let mut sql_params: Vec<SqlValue> = Vec::new();
+
+            if let Some(ref content) = filters.content_search {
+                let s = content.trim();
+                if !s.is_empty() {
+                    let pattern = format!("%{}%", escape_like(s));
+                    conditions.push("(COALESCE(st, '') LIKE ? ESCAPE '\\' OR COALESCE(usn, '') LIKE ? ESCAPE '\\')".to_string());
+                    sql_params.push(SqlValue::Text(pattern.clone()));
+                    sql_params.push(SqlValue::Text(pattern));
+                }
             }
+            if let Some(ref ip) = filters.src_ip {
+                let ip_trimmed = ip.trim();
+                if !ip_trimmed.is_empty() {
+                    conditions.push("src_ip LIKE ? ESCAPE '\\'".to_string());
+                    sql_params.push(SqlValue::Text(format!("%{}%", escape_like(ip_trimmed))));
+                }
+            }
+            if let Some(ref iface) = filters.src_interface {
+                let iface_trimmed = iface.trim();
+                if !iface_trimmed.is_empty() {
+                    conditions.push("src_interface = ?".to_string());
+                    sql_params.push(SqlValue::Text(iface_trimmed.to_string()));
+                }
+            }
+            if let Some(ref dst) = filters.dst_interface {
+                let dst_trimmed = dst.trim();
+                if !dst_trimmed.is_empty() {
+                    conditions.push("forwarded_interfaces LIKE ? ESCAPE '\\'".to_string());
+                    sql_params.push(SqlValue::Text(format!("%\"{}\"%", escape_like(dst_trimmed))));
+                }
+            }
+            if let Some(disp) = filters.disposition {
+                conditions.push("disposition = ?".to_string());
+                sql_params.push(SqlValue::Integer(disp as i64));
+            }
+            if let Some(ref method) = filters.method {
+                let m = method.trim();
+                if !m.is_empty() {
+                    conditions.push("method = ?".to_string());
+                    sql_params.push(SqlValue::Text(m.to_string()));
+                }
+            }
+            if let Some(from) = filters.from_time {
+                conditions.push("timestamp >= ?".to_string());
+                sql_params.push(SqlValue::Real(from));
+            }
+            if let Some(to) = filters.to_time {
+                conditions.push("timestamp <= ?".to_string());
+                sql_params.push(SqlValue::Real(to));
+            }
+
+            let where_clause = if conditions.is_empty() {
+                String::new()
+            } else {
+                format!("WHERE {}", conditions.join(" AND "))
+            };
+
+            let count_sql = format!("SELECT COUNT(*) FROM ssdp_messages {}", where_clause);
+            if let Ok(mut count_stmt) = conn.prepare(&count_sql) {
+                if let Ok(cnt) = count_stmt.query_row(rusqlite::params_from_iter(sql_params.iter()), |row| row.get::<_, i64>(0)) {
+                    total = cnt.max(0) as usize;
+                }
+            }
+
+            let limit = filters.limit.unwrap_or(50).clamp(1, 200);
+            let page = filters.page.unwrap_or(1).max(1);
             let offset = page.saturating_sub(1) * limit;
-            if let Ok(mut stmt) = conn.prepare(
+
+            let query_sql = format!(
                 "SELECT id, timestamp, src_ip, src_interface, method, st, usn, location, disposition, forwarded_interfaces, dropped_interfaces
-                 FROM ssdp_messages
+                 FROM ssdp_messages {}
                  ORDER BY timestamp DESC, id DESC
-                 LIMIT ?1 OFFSET ?2",
-            ) {
-                if let Ok(rows) = stmt.query_map(params![limit as i64, offset as i64], |row| {
+                 LIMIT ? OFFSET ?",
+                where_clause
+            );
+            sql_params.push(SqlValue::Integer(limit as i64));
+            sql_params.push(SqlValue::Integer(offset as i64));
+
+            if let Ok(mut stmt) = conn.prepare(&query_sql) {
+                if let Ok(rows) = stmt.query_map(rusqlite::params_from_iter(sql_params.iter()), |row| {
                     let fwd_str: String = row.get(9)?;
                     let drp_str: String = row.get(10)?;
                     Ok(SsdpHistoryItem {
@@ -775,6 +870,75 @@ mod tests {
 
         let (_, total_after) = db.query_messages(&HistoryFilterParams::default());
         assert_eq!(total_after, 0);
+
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn test_ssdp_history_filters() {
+        let (db, path) = temp_db();
+
+        db.record_ssdp_message(
+            "192.168.1.50",
+            "eth0",
+            "M-SEARCH",
+            Some("urn:schemas-upnp-org:device:MediaServer:1"),
+            None,
+            None,
+            0,
+            &["eth1".to_string()],
+            &[],
+        );
+        db.record_ssdp_message(
+            "10.0.0.25",
+            "eth1",
+            "NOTIFY",
+            Some("upnp:rootdevice"),
+            Some("uuid:12345-roku-device::upnp:rootdevice"),
+            Some("http://10.0.0.25:8060/"),
+            2,
+            &[],
+            &["eth0".to_string()],
+        );
+
+        let (all_items, all_total) = db.get_ssdp_history(&SsdpHistoryFilterParams::default());
+        assert_eq!(all_total, 2);
+        assert_eq!(all_items.len(), 2);
+
+        let (ip_items, ip_total) = db.get_ssdp_history(&SsdpHistoryFilterParams {
+            src_ip: Some("192.168.1".to_string()),
+            ..Default::default()
+        });
+        assert_eq!(ip_total, 1);
+        assert_eq!(ip_items[0].src_ip, "192.168.1.50");
+
+        let (st_items, st_total) = db.get_ssdp_history(&SsdpHistoryFilterParams {
+            content_search: Some("MediaServer".to_string()),
+            ..Default::default()
+        });
+        assert_eq!(st_total, 1);
+        assert_eq!(st_items[0].method, "M-SEARCH");
+
+        let (usn_items, usn_total) = db.get_ssdp_history(&SsdpHistoryFilterParams {
+            content_search: Some("roku-device".to_string()),
+            ..Default::default()
+        });
+        assert_eq!(usn_total, 1);
+        assert_eq!(usn_items[0].method, "NOTIFY");
+
+        let (dst_items, dst_total) = db.get_ssdp_history(&SsdpHistoryFilterParams {
+            dst_interface: Some("eth1".to_string()),
+            ..Default::default()
+        });
+        assert_eq!(dst_total, 1);
+        assert_eq!(dst_items[0].src_interface, "eth0");
+
+        let (disp_items, disp_total) = db.get_ssdp_history(&SsdpHistoryFilterParams {
+            disposition: Some(2),
+            ..Default::default()
+        });
+        assert_eq!(disp_total, 1);
+        assert_eq!(disp_items[0].src_ip, "10.0.0.25");
 
         let _ = fs::remove_file(path);
     }

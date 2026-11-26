@@ -51,7 +51,7 @@
         </button>
         <button id="viewBtnHistory" class="view-nav-btn" onclick="switchMainView('history')">
           <i data-lucide="history"></i>
-          <span>Message History</span>
+          <span>mDNS</span>
         </button>
         <button id="viewBtnSsdp" class="view-nav-btn" onclick="switchMainView('ssdp')">
           <i data-lucide="radio"></i>
@@ -188,34 +188,145 @@
         <div class="card-header history-header-wrapper">
           <div class="history-title-group">
             <h2>SSDP Message History</h2>
-            <span id="ssdpTotalCount" class="badge">0 records</span>
+            <span class="card-subtitle">Chronological record of received SSDP packets and per-interface dispositions</span>
           </div>
           <div class="history-header-actions">
+            <div class="disp-legend">
+              <span class="disp-legend-item"><span class="disp-dot forwarded"></span> Forwarded</span>
+              <span class="disp-legend-item"><span class="disp-dot partially-forwarded"></span> Partially Forwarded</span>
+              <span class="disp-legend-item"><span class="disp-dot dropped"></span> Dropped</span>
+            </div>
             <button onclick="loadSsdpHistory(1)" class="btn btn-secondary" title="Refresh SSDP History">
               <i data-lucide="refresh-cw"></i>
               <span>Refresh</span>
             </button>
+            <button onclick="resetSsdpFilters()" class="btn btn-secondary" title="Reset Filters to Default">
+              <i data-lucide="rotate-ccw"></i>
+              <span>Reset</span>
+            </button>
           </div>
         </div>
-        <div class="table-responsive">
-          <table class="data-table">
+
+        <!-- Filter Bar -->
+        <div class="history-filter-bar">
+          <!-- Search Inputs Row -->
+          <div class="history-search-grid ssdp-search-grid">
+            <div class="search-input-wrapper">
+              <i data-lucide="search" class="search-icon"></i>
+              <input type="text" id="ssdpContentSearch" placeholder="Filter by ST / NT or USN (e.g. upnp:rootdevice, uuid:...)..." onkeydown="if(event.key==='Enter') loadSsdpHistory(1)">
+            </div>
+            <div class="search-input-wrapper">
+              <i data-lucide="monitor" class="search-icon"></i>
+              <input type="text" id="ssdpSrcIpFilter" placeholder="Filter by source IP (e.g. 192.168.1.50)..." onkeydown="if(event.key==='Enter') loadSsdpHistory(1)">
+            </div>
+            <button onclick="loadSsdpHistory(1)" class="btn btn-primary">
+              <i data-lucide="search"></i>
+              <span>Search</span>
+            </button>
+          </div>
+
+          <!-- Dropdown Selectors Row -->
+          <div class="filter-controls-group">
+            <select id="ssdpInterfaceFilter" onchange="loadSsdpHistory(1)" class="filter-select">
+              <option value="">All Ingress Interfaces</option>
+            </select>
+
+            <select id="ssdpDstInterfaceFilter" onchange="loadSsdpHistory(1)" class="filter-select">
+              <option value="">All Destination Interfaces</option>
+            </select>
+
+            <select id="ssdpDispositionFilter" onchange="loadSsdpHistory(1)" class="filter-select">
+              <option value="">All Dispositions</option>
+              <option value="0">Forwarded</option>
+              <option value="1">Partially Forwarded</option>
+              <option value="2">Dropped</option>
+            </select>
+
+            <select id="ssdpMethodFilter" onchange="loadSsdpHistory(1)" class="filter-select">
+              <option value="">All Methods</option>
+              <option value="M-SEARCH">M-SEARCH</option>
+              <option value="NOTIFY">NOTIFY</option>
+              <option value="200 OK">200 OK</option>
+            </select>
+
+            <select id="ssdpTimePreset" onchange="onSsdpPresetChange()" class="filter-select">
+              <option value="15m">Last 15 Minutes</option>
+              <option value="1h">Last 1 Hour</option>
+              <option value="24h">Last 24 Hours</option>
+              <option value="7d" selected>Last 7 Days</option>
+              <option value="all">All Time</option>
+              <option value="custom">Custom Range...</option>
+            </select>
+          </div>
+
+          <!-- Custom Time Range Row -->
+          <div id="ssdpCustomTimeRow" class="custom-time-row hidden">
+            <div class="custom-time-field">
+              <label for="ssdpTimeFrom">From:</label>
+              <input type="datetime-local" id="ssdpTimeFrom" class="datetime-input">
+            </div>
+            <div class="custom-time-field">
+              <label for="ssdpTimeTo">To:</label>
+              <input type="datetime-local" id="ssdpTimeTo" class="datetime-input">
+            </div>
+            <button onclick="loadSsdpHistory(1)" class="btn btn-primary btn-sm">Apply Range</button>
+          </div>
+        </div>
+
+        <!-- Table Container -->
+        <div class="table-container history-table-container">
+          <table class="history-table">
             <thead>
               <tr>
-                <th>Time</th>
-                <th>Source IP</th>
-                <th>Interface</th>
-                <th>Method</th>
-                <th>ST / NT</th>
-                <th>USN</th>
-                <th>Disposition</th>
-                <th>Forwarded</th>
-                <th>Dropped</th>
+                <th style="width: 36px;"></th>
+                <th style="width: 56px; text-align: center;">Status</th>
+                <th style="width: 165px;">Timestamp</th>
+                <th style="width: 130px;">Source IP</th>
+                <th style="width: 95px;">Ingress</th>
+                <th style="width: 125px;">Method</th>
+                <th style="width: 145px;">Forwarded To</th>
+                <th>ST / NT &amp; USN</th>
+                <th style="width: 80px; text-align: right;">Action</th>
               </tr>
             </thead>
             <tbody id="ssdpHistoryTableBody">
-              <tr><td colspan="9" class="text-center">Loading...</td></tr>
+              <tr>
+                <td colspan="9" class="table-empty">Loading SSDP message history...</td>
+              </tr>
             </tbody>
           </table>
+        </div>
+
+        <!-- Pagination Bar -->
+        <div class="history-pagination">
+          <div class="pagination-info" id="ssdpPaginationInfo">
+            Showing 0 - 0 of 0 messages
+          </div>
+          <div class="pagination-controls">
+            <div class="page-size-selector">
+              <label for="ssdpPageSize">Per page:</label>
+              <select id="ssdpPageSize" onchange="loadSsdpHistory(1)" class="filter-select select-sm">
+                <option value="25">25</option>
+                <option value="50" selected>50</option>
+                <option value="100">100</option>
+              </select>
+            </div>
+            <div class="pagination-buttons">
+              <button id="btnSsdpFirst" onclick="ssdpGoToPage(1)" class="btn btn-icon btn-sm" title="First Page">
+                <i data-lucide="chevrons-left"></i>
+              </button>
+              <button id="btnSsdpPrev" onclick="ssdpGoToPage(currentSsdpPage - 1)" class="btn btn-icon btn-sm" title="Previous Page">
+                <i data-lucide="chevron-left"></i>
+              </button>
+              <span id="ssdpPageIndicator" class="page-indicator">Page 1 of 1</span>
+              <button id="btnSsdpNext" onclick="ssdpGoToPage(currentSsdpPage + 1)" class="btn btn-icon btn-sm" title="Next Page">
+                <i data-lucide="chevron-right"></i>
+              </button>
+              <button id="btnSsdpLast" onclick="ssdpGoToPage(totalSsdpPages)" class="btn btn-icon btn-sm" title="Last Page">
+                <i data-lucide="chevrons-right"></i>
+              </button>
+            </div>
+          </div>
         </div>
       </section>
     </div>
@@ -250,12 +361,8 @@
           <!-- Search Inputs Row -->
           <div class="history-search-grid">
             <div class="search-input-wrapper">
-              <i data-lucide="help-circle" class="search-icon"></i>
-              <input type="text" id="historyQuerySearch" placeholder="Filter by query name (e.g. _googlecast._tcp.local)..." onkeydown="if(event.key==='Enter') loadHistoryData(1)">
-            </div>
-            <div class="search-input-wrapper">
-              <i data-lucide="database" class="search-icon"></i>
-              <input type="text" id="historyResponseSearch" placeholder="Filter by response name or data (IP, target, TXT)..." onkeydown="if(event.key==='Enter') loadHistoryData(1)">
+              <i data-lucide="search" class="search-icon"></i>
+              <input type="text" id="historyContentSearch" placeholder="Filter by query or response (name, IP, target, TXT)..." onkeydown="if(event.key==='Enter') loadHistoryData(1)">
             </div>
             <div class="search-input-wrapper">
               <i data-lucide="monitor" class="search-icon"></i>
