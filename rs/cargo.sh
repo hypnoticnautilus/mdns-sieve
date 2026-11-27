@@ -38,6 +38,24 @@ GROUP_ID=$(id -g)
 # Create a local cache directory so cargo doesn't redownload crates every run
 mkdir -p .cargo_cache
 
+# Resolve version and git revision from the repository root (since only rs/ is mounted)
+REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+APP_VERSION="0.1.0"
+if [[ -f "$REPO_ROOT/VERSION" ]]; then
+    APP_VERSION=$(tr -d '[:space:]' < "$REPO_ROOT/VERSION")
+fi
+GIT_REV_COUNT=$(git -C "$REPO_ROOT" rev-list --count HEAD 2>/dev/null || echo "0")
+GIT_COMMIT=$(git -C "$REPO_ROOT" rev-parse --short HEAD 2>/dev/null || echo "unknown")
+if [[ "$GIT_COMMIT" != "unknown" ]] && [[ -n "$(git -C "$REPO_ROOT" status --porcelain 2>/dev/null)" ]]; then
+    GIT_COMMIT="${GIT_COMMIT}+"
+fi
+
+DOCKER_ENV+=(
+    -e "MDNS_SIEVE_VERSION=$APP_VERSION"
+    -e "MDNS_SIEVE_REV_COUNT=$GIT_REV_COUNT"
+    -e "MDNS_SIEVE_COMMIT=$GIT_COMMIT"
+)
+
 # Run cargo inside docker, mounting the current directory and setting the user to match the host
 docker run --rm \
     --user "$USER_ID:$GROUP_ID" \

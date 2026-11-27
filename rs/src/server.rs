@@ -279,8 +279,8 @@ impl CommandServerManager {
                         "dropped": self.stats_dropped,
                     },
                     "interfaces": self.configured_interfaces,
-                    "version": "0.1.0",
-                    "commit": "rust-port"
+                    "version": env!("MDNS_SIEVE_FULL_VERSION"),
+                    "commit": env!("MDNS_SIEVE_COMMIT")
                 })
             }
             "clear" => {
@@ -788,5 +788,16 @@ mod tests {
         assert!(ifaces.iter().any(|v| v == "br-iot"));
 
         let _ = std::fs::remove_file(&db_path);
+    }
+
+    #[test]
+    fn test_stats_reports_version_and_commit() {
+        let mut mgr = CommandServerManager::new(None, None, vec!["eth0".to_string()]);
+        let resp = mgr.process_command(&json!({"command": "stats"}));
+        assert_eq!(resp["status"], "ok");
+        let version = resp["version"].as_str().expect("version string");
+        let commit = resp["commit"].as_str().expect("commit string");
+        assert!(version.contains("-r"), "expected -r<rev> in version, got {version}");
+        assert!(!commit.is_empty() && commit != "rust-port", "unexpected commit: {commit}");
     }
 }

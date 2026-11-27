@@ -8,9 +8,7 @@ let knownInterfaces = new Set();
 
 // Sieve daemon details (updated dynamically from API responses)
 let daemonCommit = '-';
-let guiCommit = '-';
 let daemonVersion = '-';
-let guiVersion = '-';
 
 // Chart.js Instances
 let mainChart = null;
@@ -201,8 +199,8 @@ function toggleModal(modalId, show) {
       document.getElementById('setChartWindow').value = chartWindowSize;
     }
     if (modalId === 'infoModal') {
-      document.getElementById('infoDaemonVersion').textContent = `${daemonVersion} (${daemonCommit})`;
-      document.getElementById('infoGuiVersion').textContent = `${guiVersion} (${guiCommit})`;
+      document.getElementById('infoVersion').textContent = daemonVersion;
+      document.getElementById('infoCommit').textContent = daemonCommit;
     }
   } else {
     modal.classList.add('hidden');
@@ -360,9 +358,7 @@ async function refreshData() {
       updateInterfaceDropdowns(statsRes.interfaces);
     }
     if (statsRes.commit) daemonCommit = statsRes.commit;
-    if (statsRes.gui_commit) guiCommit = statsRes.gui_commit;
     if (statsRes.version) daemonVersion = statsRes.version;
-    if (statsRes.gui_version) guiVersion = statsRes.gui_version;
 
     if (currentMainView === 'history') {
       await loadHistoryData(currentHistoryPage, true);

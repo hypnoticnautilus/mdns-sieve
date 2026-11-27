@@ -56,12 +56,30 @@ if [ -z "$ARCH" ]; then
     esac
 fi
 
-echo "Packaging for Alpine architecture: $ARCH"
+# Resolve pkgver and pkgrel from environment or VERSION + git revision
+PROJECT_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
+PKGVER="${MDNS_SIEVE_PKGVER:-}"
+if [ -z "$PKGVER" ] && [ -f "$PROJECT_DIR/VERSION" ]; then
+    PKGVER="$(tr -d '[:space:]' < "$PROJECT_DIR/VERSION")"
+fi
+PKGVER="${PKGVER:-0.1.0}"
+
+PKGREL="${MDNS_SIEVE_PKGREL:-}"
+if [ -z "$PKGREL" ]; then
+    PKGREL="$(git -C "$PROJECT_DIR" rev-list --count HEAD 2>/dev/null || echo "0")"
+fi
+
+echo "Packaging mdns-sieve ${PKGVER}-r${PKGREL} for Alpine architecture: $ARCH"
 echo "Output directory: $OUTPUT_DIR"
 
-# Copy binary into $startdir (SCRIPT_DIR)
-cp "$BINARY" "$SCRIPT_DIR/mdns-sieve"
-chmod 755 "$SCRIPT_DIR/mdns-sieve"
+# Stage APKBUILD workspace in /tmp/apkbuild so host files remain untouched
+WORK_DIR="/tmp/apkbuild"
+rm -rf "$WORK_DIR"
+mkdir -p "$WORK_DIR"
+cp "$SCRIPT_DIR/APKBUILD" "$SCRIPT_DIR/mdns-sieve.initd" "$WORK_DIR/"
+cp "$BINARY" "$WORK_DIR/mdns-sieve"
+chmod 755 "$WORK_DIR/mdns-sieve"
+sed -i -e "s/^pkgver=.*/pkgver=\"${PKGVER}\"/" -e "s/^pkgrel=.*/pkgrel=${PKGREL}/" "$WORK_DIR/APKBUILD"
 
 # Configure builder user
 adduser -D -G abuild builder || true
@@ -86,10 +104,10 @@ else
 fi
 
 # Fix permissions on package workspace for builder user
-chown -R builder:abuild "$SCRIPT_DIR"
+chown -R builder:abuild "$WORK_DIR"
 
 # Build packages as builder user for target architecture
-cd "$SCRIPT_DIR"
+cd "$WORK_DIR"
 su builder -c "CARCH=$ARCH abuild -r -f"
 
 # Copy generated APKs, index, and public keys to output directory
@@ -101,7 +119,7 @@ find /home/builder/packages -type f -name "APKINDEX.tar.gz" -exec cp {} "$OUTPUT
 rm -f "$OUTPUT_DIR"/*.rsa.pub
 cp /home/builder/.abuild/*.rsa.pub "$OUTPUT_DIR/" 2>/dev/null || true
 
-# Clean up copied build binary from source dir
-rm -f "$SCRIPT_DIR/mdns-sieve"
+# Clean up temporary build workspace
+rm -rf "$WORK_DIR"
 
 echo "APKs and signing key successfully created in $OUTPUT_DIR"

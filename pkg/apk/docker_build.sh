@@ -59,7 +59,16 @@ if [ -n "$KEY_FILE" ]; then
     BUILD_ARGS="$BUILD_ARGS -k /tmp/packaging.rsa"
 fi
 
+DOCKER_ENV=""
+PKGVER="0.1.0"
+if [ -f "$PROJECT_DIR/VERSION" ]; then
+    PKGVER="$(tr -d '[:space:]' < "$PROJECT_DIR/VERSION")"
+fi
+PKGREL="$(git -C "$PROJECT_DIR" rev-list --count HEAD 2>/dev/null || echo "0")"
+DOCKER_ENV="-e MDNS_SIEVE_PKGVER=$PKGVER -e MDNS_SIEVE_PKGREL=$PKGREL"
+
 docker run --rm \
+    $DOCKER_ENV \
     -v "$PROJECT_DIR:/project" \
     -v "$ABS_BINARY:/tmp/mdns-sieve-bin:ro" \
     $DOCKER_KEY_MOUNT \
