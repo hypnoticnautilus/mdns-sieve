@@ -84,6 +84,17 @@ jobs:
           git tag -f nightly "${{ github.sha }}"
           git push -f origin nightly
 
+      - name: Remove old nightly release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view nightly >/dev/null 2>&1; then
+            for asset in $(gh release view nightly --json assets --jq '.assets[].name'); do
+              echo "Deleting stale asset: $asset"
+              gh release delete-asset nightly "$asset" --yes
+            done
+          fi
+
       - name: Publish Rolling Nightly Prerelease
         uses: softprops/action-gh-release@v2
         with:
