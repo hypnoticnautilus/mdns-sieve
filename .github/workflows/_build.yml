@@ -91,9 +91,12 @@ jobs:
           ALPINE_ARCH="${{ matrix.alpine_arch }}"
           TARGET="${{ matrix.rust_target }}"
 
-          # Standalone ELF binary
-          cp "rs/target/${TARGET}/release/mdns-sieve" "dist/${ARCH}/mdns-sieve-${ARCH}"
-          chmod 755 "dist/${ARCH}/mdns-sieve-${ARCH}"
+          # Standalone binary archive (do not publish raw ELF binary)
+          mkdir -p "bin-staging"
+          cp "rs/target/${TARGET}/release/mdns-sieve" "bin-staging/mdns-sieve"
+          chmod 755 "bin-staging/mdns-sieve"
+          tar -czf "dist/${ARCH}/mdns-sieve-${ARCH}.tar.gz" -C bin-staging mdns-sieve
+          rm -rf bin-staging
 
           # Package repository archive for Alpine
           mkdir -p "staging/${ALPINE_ARCH}"
@@ -102,6 +105,7 @@ jobs:
           cp dist/${ARCH}/*.rsa.pub "staging/"
           tar -czf "dist/${ARCH}/mdns-sieve-alpine-${ARCH}.tar.gz" -C staging .
           rm -rf staging
+          rm -f "dist/${ARCH}/APKINDEX.tar.gz"
 
           # Tag individual APK filenames with architecture to prevent naming collisions
           for f in dist/${ARCH}/*.apk; do
