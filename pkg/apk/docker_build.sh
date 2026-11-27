@@ -59,12 +59,15 @@ if [ -n "$KEY_FILE" ]; then
     BUILD_ARGS="$BUILD_ARGS -k /tmp/packaging.rsa"
 fi
 
-DOCKER_ENV=""
-PKGVER="0.1.0"
-if [ -f "$PROJECT_DIR/VERSION" ]; then
-    PKGVER="$(tr -d '[:space:]' < "$PROJECT_DIR/VERSION")"
+if GIT_DESC="$(git -C "$PROJECT_DIR" describe --tags --match 'v*' --long 2>/dev/null)"; then
+    DESC_PREFIX="${GIT_DESC%-*}"
+    PKGREL="${DESC_PREFIX##*-}"
+    GIT_TAG="${DESC_PREFIX%-*}"
+    PKGVER="${GIT_TAG#v}"
+else
+    PKGVER="0.0.0"
+    PKGREL="$(git -C "$PROJECT_DIR" rev-list --count HEAD 2>/dev/null || echo "0")"
 fi
-PKGREL="$(git -C "$PROJECT_DIR" rev-list --count HEAD 2>/dev/null || echo "0")"
 DOCKER_ENV="-e MDNS_SIEVE_PKGVER=$PKGVER -e MDNS_SIEVE_PKGREL=$PKGREL"
 
 docker run --rm \

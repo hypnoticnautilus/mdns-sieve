@@ -56,17 +56,21 @@ if [ -z "$ARCH" ]; then
     esac
 fi
 
-# Resolve pkgver and pkgrel from environment or VERSION + git revision
+# Resolve pkgver and pkgrel from environment or git describe (v* tags)
 PROJECT_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
 PKGVER="${MDNS_SIEVE_PKGVER:-}"
-if [ -z "$PKGVER" ] && [ -f "$PROJECT_DIR/VERSION" ]; then
-    PKGVER="$(tr -d '[:space:]' < "$PROJECT_DIR/VERSION")"
-fi
-PKGVER="${PKGVER:-0.1.0}"
-
 PKGREL="${MDNS_SIEVE_PKGREL:-}"
-if [ -z "$PKGREL" ]; then
-    PKGREL="$(git -C "$PROJECT_DIR" rev-list --count HEAD 2>/dev/null || echo "0")"
+if [ -z "$PKGVER" ] || [ -z "$PKGREL" ]; then
+    if GIT_DESC="$(git -C "$PROJECT_DIR" describe --tags --match 'v*' --long 2>/dev/null)"; then
+        DESC_PREFIX="${GIT_DESC%-*}"
+        GIT_REL="${DESC_PREFIX##*-}"
+        GIT_TAG="${DESC_PREFIX%-*}"
+        PKGVER="${PKGVER:-${GIT_TAG#v}}"
+        PKGREL="${PKGREL:-$GIT_REL}"
+    else
+        PKGVER="${PKGVER:-0.0.0}"
+        PKGREL="${PKGREL:-$(git -C "$PROJECT_DIR" rev-list --count HEAD 2>/dev/null || echo "0")}"
+    fi
 fi
 
 echo "Packaging mdns-sieve ${PKGVER}-r${PKGREL} for Alpine architecture: $ARCH"

@@ -38,13 +38,17 @@ GROUP_ID=$(id -g)
 # Create a local cache directory so cargo doesn't redownload crates every run
 mkdir -p .cargo_cache
 
-# Resolve version and git revision from the repository root (since only rs/ is mounted)
+# Resolve version and git revision from v* tags (since only rs/ is mounted)
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-APP_VERSION="0.1.0"
-if [[ -f "$REPO_ROOT/VERSION" ]]; then
-    APP_VERSION=$(tr -d '[:space:]' < "$REPO_ROOT/VERSION")
+if GIT_DESC=$(git -C "$REPO_ROOT" describe --tags --match 'v*' --long 2>/dev/null); then
+    DESC_PREFIX="${GIT_DESC%-*}"
+    GIT_REV_COUNT="${DESC_PREFIX##*-}"
+    GIT_TAG="${DESC_PREFIX%-*}"
+    APP_VERSION="${GIT_TAG#v}"
+else
+    APP_VERSION="0.0.0"
+    GIT_REV_COUNT=$(git -C "$REPO_ROOT" rev-list --count HEAD 2>/dev/null || echo "0")
 fi
-GIT_REV_COUNT=$(git -C "$REPO_ROOT" rev-list --count HEAD 2>/dev/null || echo "0")
 GIT_COMMIT=$(git -C "$REPO_ROOT" rev-parse --short HEAD 2>/dev/null || echo "unknown")
 if [[ "$GIT_COMMIT" != "unknown" ]] && [[ -n "$(git -C "$REPO_ROOT" status --porcelain 2>/dev/null)" ]]; then
     GIT_COMMIT="${GIT_COMMIT}+"
